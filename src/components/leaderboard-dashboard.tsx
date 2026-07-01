@@ -107,7 +107,7 @@ function initials(name: string) {
 function MovementChip({ delta }: { delta: number | null }) {
   if (delta == null) {
     return (
-      <span className="inline-flex h-7 min-w-10 items-center justify-center rounded-md border border-slate-200 bg-slate-50 px-2 text-xs font-semibold text-slate-500">
+      <span className="inline-flex h-7 min-w-10 shrink-0 items-center justify-center rounded-md border border-slate-200 bg-slate-50 px-2 text-xs font-semibold text-slate-500">
         -
       </span>
     );
@@ -115,7 +115,7 @@ function MovementChip({ delta }: { delta: number | null }) {
 
   if (delta === 0) {
     return (
-      <span className="inline-flex h-7 min-w-10 items-center justify-center rounded-md border border-slate-200 bg-white px-2 text-xs font-semibold text-slate-500">
+      <span className="inline-flex h-7 min-w-10 shrink-0 items-center justify-center rounded-md border border-slate-200 bg-white px-2 text-xs font-semibold text-slate-500">
         0
       </span>
     );
@@ -124,7 +124,7 @@ function MovementChip({ delta }: { delta: number | null }) {
   return (
     <span
       className={cn(
-        "inline-flex h-7 min-w-10 items-center justify-center rounded-md border px-2 text-xs font-semibold",
+        "inline-flex h-7 min-w-10 shrink-0 items-center justify-center rounded-md border px-2 text-xs font-semibold",
         delta > 0
           ? "border-emerald-200 bg-emerald-50 text-emerald-700"
           : "border-rose-200 bg-rose-50 text-rose-700",
@@ -149,7 +149,7 @@ function TeamPill({
   }
 
   const className = cn(
-    "inline-flex h-7 items-center gap-1.5 rounded-md border px-2 text-xs font-semibold transition",
+    "inline-flex h-7 max-w-full min-w-0 items-center gap-1.5 rounded-md border px-2 text-xs font-semibold transition",
     active
       ? "border-slate-900 bg-slate-900 text-white"
       : "border-slate-200 bg-white text-slate-700",
@@ -158,8 +158,8 @@ function TeamPill({
 
   const content = (
     <>
-      <span className="h-2 w-2 rounded-full" style={{ backgroundColor: teamColor(team) }} />
-      {team}
+      <span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: teamColor(team) }} />
+      <span className="min-w-0 truncate">{team}</span>
     </>
   );
 
@@ -494,7 +494,7 @@ function MatchdayPredictions({
         <select
           value={selectedDate}
           onChange={(event) => changeDate(event.target.value)}
-          className="h-9 rounded-md border border-slate-200 bg-white px-3 text-sm outline-none transition focus:border-teal-500"
+          className="h-11 rounded-md border border-slate-200 bg-white px-3 text-sm outline-none transition focus:border-teal-500 sm:h-9"
           aria-label="Select matchday"
         >
           {dates.map((date) => (
@@ -520,7 +520,7 @@ function MatchdayPredictions({
           >
             <div className="flex items-center justify-between gap-2 text-xs">
               <span className={selectedMatch?.matchNo === match.matchNo ? "text-teal-200" : "text-slate-500"}>
-                Match {match.matchNo} · {match.time}
+                Match {match.matchNo} &middot; {match.time}
               </span>
               <span className={selectedMatch?.matchNo === match.matchNo ? "text-slate-300" : "text-slate-500"}>
                 {match.venue}
@@ -564,7 +564,7 @@ function MatchdayPredictions({
                   <div className="mt-2 flex flex-wrap gap-2">
                     {exactGroups.map((item) => (
                       <span key={item.label} className="rounded-md border border-slate-200 bg-white px-2 py-1 text-xs text-slate-700">
-                        {item.label} · {item.count}
+                        {item.label} &middot; {item.count}
                       </span>
                     ))}
                   </div>
@@ -763,7 +763,7 @@ function PredictionCenter({
               Choose a bracket slot and scan each person&apos;s Round of 32 through Final prediction.
             </p>
           </div>
-          <div className="grid grid-cols-1 gap-2 text-center text-xs min-[420px]:grid-cols-3 lg:min-w-[300px]">
+          <div className="grid w-full grid-cols-1 gap-2 text-center text-xs min-[420px]:grid-cols-3 lg:w-auto lg:min-w-[300px]">
             <div className="rounded-lg border border-white/10 bg-white/10 px-3 py-2 shadow-inner">
               <p className="text-slate-300">Matches</p>
               <p className="mt-1 text-lg font-semibold">{dayMatches.length}</p>
@@ -774,7 +774,7 @@ function PredictionCenter({
             </div>
             <div className="rounded-lg border border-white/10 bg-white/10 px-3 py-2 shadow-inner">
               <p className="text-slate-300">Top call</p>
-              <p className="mt-1 max-w-24 truncate text-lg font-semibold">{consensus[0]?.result ?? "-"}</p>
+              <p className="mt-1 truncate text-lg font-semibold">{consensus[0]?.result ?? "-"}</p>
             </div>
           </div>
         </div>
@@ -792,7 +792,7 @@ function PredictionCenter({
                 Fixed-seed simulations use everyone&apos;s bracket picks to infer team strength, then score each bracket against the official knockout slot path.
               </p>
             </div>
-            <div className="grid grid-cols-3 gap-2 text-center text-xs sm:min-w-[300px]">
+            <div className="grid w-full grid-cols-3 gap-2 text-center text-xs sm:min-w-[300px]">
               <div className="rounded-lg border border-slate-200 bg-slate-50 px-2 py-2">
                 <p className="text-slate-500">Runs</p>
                 <p className="mt-1 font-semibold text-slate-950">{compactNumber(bracketOutlook.simulationCount)}</p>
@@ -810,8 +810,8 @@ function PredictionCenter({
             </div>
           </div>
 
-          <div className="mt-4 overflow-hidden rounded-lg border border-slate-200">
-            <table className="w-full text-left text-sm">
+          <div className="mt-4 overflow-x-auto rounded-lg border border-slate-200">
+            <table className="min-w-[640px] w-full text-left text-sm">
               <thead className="bg-slate-50 text-xs uppercase text-slate-500">
                 <tr>
                   <th className="px-3 py-2 font-semibold">Person</th>
@@ -878,9 +878,9 @@ function PredictionCenter({
               type="button"
               onClick={() => selectDate(dates[Math.max(0, selectedDateIndex - 1)] ?? selectedDate)}
               disabled={selectedDateIndex <= 0}
-              className="h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm font-medium text-slate-700 transition hover:border-slate-300 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40 md:w-auto"
+              className="h-11 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm font-medium text-slate-700 transition hover:border-slate-300 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40 md:h-10 md:w-auto"
             >
-              Previous bracket day
+              Previous
             </button>
             <input
               type="date"
@@ -888,16 +888,16 @@ function PredictionCenter({
               min={minWorldCupDate}
               max={maxWorldCupDate}
               onChange={(event) => selectDate(event.target.value)}
-              className="h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-950 outline-none transition focus:border-teal-500 focus:ring-4 focus:ring-teal-500/10 md:w-auto"
+              className="h-11 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-950 outline-none transition focus:border-teal-500 focus:ring-4 focus:ring-teal-500/10 md:h-10 md:w-auto"
               aria-label="Select World Cup 2026 knockout date"
             />
             <button
               type="button"
               onClick={() => selectDate(dates[Math.min(dates.length - 1, selectedDateIndex + 1)] ?? selectedDate)}
               disabled={selectedDateIndex >= dates.length - 1}
-              className="h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm font-medium text-slate-700 transition hover:border-slate-300 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40 md:w-auto"
+              className="h-11 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm font-medium text-slate-700 transition hover:border-slate-300 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40 md:h-10 md:w-auto"
             >
-              Next bracket day
+              Next
             </button>
           </div>
         </div>
@@ -952,7 +952,7 @@ function PredictionCenter({
                       {selectedMatch.team1} <span className="text-slate-400">vs</span> {selectedMatch.team2}
                     </h3>
                     <p className="mt-1 break-words text-sm text-slate-500">
-                      Match {selectedMatch.matchNo} · {selectedMatch.time} · {selectedMatch.venue}
+                      Match {selectedMatch.matchNo} &middot; {selectedMatch.time} &middot; {selectedMatch.venue}
                     </p>
                   </div>
                   <div className="w-fit rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm">
@@ -1009,7 +1009,7 @@ function PredictionCenter({
                       key={option.value}
                       onClick={() => setPredictionFilter(option.value)}
                       className={cn(
-                        "rounded-md border px-3 py-2 text-left text-sm font-medium transition",
+                        "min-h-11 rounded-md border px-3 py-2 text-left text-sm font-medium transition",
                         predictionFilter === option.value
                           ? "border-slate-900 bg-slate-900 text-white shadow-sm"
                           : "border-slate-200 bg-slate-50 text-slate-700 hover:border-slate-300 hover:bg-white",
@@ -1024,7 +1024,7 @@ function PredictionCenter({
                   <input
                     value={predictionQuery}
                     onChange={(event) => setPredictionQuery(event.target.value)}
-                    className="h-10 w-full rounded-lg border border-slate-200 bg-white pl-9 pr-3 text-sm outline-none transition focus:border-teal-500 focus:ring-4 focus:ring-teal-500/10"
+                    className="h-11 w-full rounded-lg border border-slate-200 bg-white pl-9 pr-3 text-sm outline-none transition focus:border-teal-500 focus:ring-4 focus:ring-teal-500/10 sm:h-10"
                     placeholder="Search name, team, score"
                   />
                 </label>
@@ -1051,7 +1051,7 @@ function PredictionCenter({
                         type="button"
                         key={`${selectedMatch.matchNo}-${prediction.name}`}
                         onClick={() => player && onSelectPlayer(player.participantId)}
-                        className="rounded-xl border border-slate-200 bg-white p-3 text-left shadow-sm transition hover:-translate-y-0.5 hover:border-teal-300 hover:bg-teal-50/40 hover:shadow-md"
+                        className="min-w-0 rounded-xl border border-slate-200 bg-white p-3 text-left shadow-sm transition hover:-translate-y-0.5 hover:border-teal-300 hover:bg-teal-50/40 hover:shadow-md"
                       >
                         <div className="flex items-start justify-between gap-2">
                           <div className="min-w-0">
@@ -1099,18 +1099,18 @@ function PodiumCard({ entry }: { entry: LeaderboardEntry }) {
     >
       <div className="absolute inset-x-0 bottom-0 h-16 bg-[linear-gradient(90deg,rgba(15,118,110,.08)_1px,transparent_1px),linear-gradient(0deg,rgba(15,118,110,.08)_1px,transparent_1px)] bg-[size:24px_24px]" />
       <div className="relative flex items-start justify-between gap-3">
-        <div className="flex items-center gap-3">
-          <div className={cn("flex h-12 w-12 items-center justify-center rounded-full", medalClass)}>
+        <div className="flex min-w-0 items-center gap-3">
+          <div className={cn("flex h-12 w-12 shrink-0 items-center justify-center rounded-full", medalClass)}>
             {isChampion ? <Crown className="h-6 w-6" /> : <Medal className="h-6 w-6" />}
           </div>
-          <div>
+          <div className="min-w-0">
             <p className="text-xs font-semibold uppercase text-slate-500">Rank {entry.rank}</p>
             <h2 className="mt-1 break-words text-base font-semibold text-slate-950 sm:text-lg">{entry.name}</h2>
           </div>
         </div>
         <MovementChip delta={entry.rankDelta} />
       </div>
-      <div className="relative mt-4 grid grid-cols-3 gap-2 text-xs sm:mt-5 sm:text-sm">
+      <div className="relative mt-4 grid grid-cols-1 gap-2 text-xs min-[420px]:grid-cols-3 sm:mt-5 sm:text-sm">
         <div className="rounded-md bg-slate-50 p-2">
           <p className="text-xs text-slate-500">Score</p>
           <p className="mt-1 font-semibold text-slate-950">{compactNumber(entry.score)}</p>
@@ -1121,7 +1121,7 @@ function PodiumCard({ entry }: { entry: LeaderboardEntry }) {
         </div>
         <div className="rounded-md bg-slate-50 p-2">
           <p className="text-xs text-slate-500">Winner</p>
-          <p className="mt-1 truncate font-semibold text-slate-950">{entry.selectedWinner ?? "-"}</p>
+          <p className="mt-1 break-words font-semibold text-slate-950">{entry.selectedWinner ?? "-"}</p>
         </div>
       </div>
     </motion.button>
@@ -1209,7 +1209,7 @@ function PlayerCard({
         </div>
         <MovementChip delta={entry.rankDelta} />
       </div>
-      <div className="mt-3 grid grid-cols-3 gap-2 text-xs sm:mt-4 sm:text-sm">
+      <div className="mt-3 grid grid-cols-2 gap-2 text-xs min-[420px]:grid-cols-3 sm:mt-4 sm:text-sm">
         <div>
           <p className="text-xs text-slate-500">Score</p>
           <p className="font-semibold text-slate-950">{entry.score}</p>
@@ -1219,7 +1219,7 @@ function PlayerCard({
           <p className="font-semibold text-slate-950">{formatCurrency(entry.prize)}</p>
         </div>
         <div>
-          <p className="text-xs text-slate-500">Winning probability</p>
+          <p className="text-xs text-slate-500">Win chance</p>
           <p className="font-semibold text-slate-950">{formatProbability(winningProbability)}</p>
         </div>
       </div>
@@ -1252,19 +1252,19 @@ function DetailPanel({ entry, onClose }: { entry: LeaderboardEntry | null; onClo
             </button>
           </div>
           <div className="mt-4 grid grid-cols-1 gap-2 text-sm min-[420px]:grid-cols-2 sm:gap-3">
-            <div className="rounded-md bg-slate-50 p-3">
+            <div className="min-w-0 rounded-md bg-slate-50 p-3">
               <p className="text-xs text-slate-500">Score</p>
               <p className="mt-1 text-xl font-semibold text-slate-950">{compactNumber(entry.score)}</p>
             </div>
-            <div className="rounded-md bg-slate-50 p-3">
+            <div className="min-w-0 rounded-md bg-slate-50 p-3">
               <p className="text-xs text-slate-500">Movement</p>
               <div className="mt-1"><MovementChip delta={entry.rankDelta} /></div>
             </div>
-            <div className="rounded-md bg-slate-50 p-3">
+            <div className="min-w-0 rounded-md bg-slate-50 p-3">
               <p className="text-xs text-slate-500">Prize</p>
               <p className="mt-1 font-semibold text-slate-950">{formatCurrency(entry.prize)}</p>
             </div>
-            <div className="rounded-md bg-slate-50 p-3">
+            <div className="min-w-0 rounded-md bg-slate-50 p-3">
               <p className="text-xs text-slate-500">Winner pick</p>
               <div className="mt-1"><TeamPill team={entry.selectedWinner} /></div>
             </div>
@@ -1362,10 +1362,10 @@ export function LeaderboardDashboard({ initialData }: Props) {
                 <h1 className="truncate text-lg font-semibold tracking-tight text-slate-950 sm:text-xl">Live leaderboard</h1>
               </div>
             </div>
-            <p className="text-center text-[11px] font-semibold uppercase tracking-wide text-slate-500 sm:text-xs">
+            <p className="text-left text-[11px] font-semibold uppercase tracking-wide text-slate-500 sm:text-xs md:text-center">
               Developed by Anish Baniya - IT Department
             </p>
-            <div className="flex flex-wrap items-center gap-1.5 text-xs md:justify-end">
+            <div className="flex min-w-0 flex-wrap items-center gap-1.5 text-xs md:justify-end">
               <span
                 className={cn(
                   "inline-flex items-center gap-1.5 rounded-md border px-2 py-1 font-medium",
@@ -1377,7 +1377,7 @@ export function LeaderboardDashboard({ initialData }: Props) {
                 {initialData.health.ok ? <CheckCircle2 className="h-3.5 w-3.5" /> : <AlertCircle className="h-3.5 w-3.5" />}
                 {initialData.health.ok ? "Sheet connected" : "Sheet unavailable"}
               </span>
-              <span className="rounded-md border border-slate-200 bg-white px-2 py-1 font-medium text-slate-600">
+              <span className="min-w-0 rounded-md border border-slate-200 bg-white px-2 py-1 font-medium text-slate-600">
                 Last synced: {initialData.lastSyncedAt ? new Date(initialData.lastSyncedAt).toLocaleString() : "Live sheet"}
               </span>
             </div>
@@ -1402,7 +1402,7 @@ export function LeaderboardDashboard({ initialData }: Props) {
               type="button"
               onClick={() => setActiveTab("leaderboard")}
               className={cn(
-                "flex min-w-0 items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-xs font-semibold transition sm:text-sm",
+                "flex h-10 min-w-0 items-center justify-center gap-1.5 rounded-md px-2 text-xs font-semibold transition sm:text-sm",
                 activeTab === "leaderboard" ? "bg-slate-950 text-white shadow-sm" : "text-slate-600 hover:bg-slate-50",
               )}
             >
@@ -1419,7 +1419,7 @@ export function LeaderboardDashboard({ initialData }: Props) {
               type="button"
               onClick={() => setActiveTab("predictions")}
               className={cn(
-                "flex min-w-0 items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-xs font-semibold transition sm:text-sm",
+                "flex h-10 min-w-0 items-center justify-center gap-1.5 rounded-md px-2 text-xs font-semibold transition sm:text-sm",
                 activeTab === "predictions" ? "bg-slate-950 text-white shadow-sm" : "text-slate-600 hover:bg-slate-50",
               )}
             >
@@ -1461,20 +1461,20 @@ export function LeaderboardDashboard({ initialData }: Props) {
                     {teamFilter ? ` for ${teamFilter}` : ""}
                   </p>
                 </div>
-                <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center sm:justify-end">
-                  <label className="relative">
+                <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center sm:justify-end">
+                  <label className="relative min-w-0">
                     <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
                     <input
                       value={query}
                       onChange={(event) => setQuery(event.target.value)}
-                      className="h-10 w-full rounded-lg border border-slate-200 bg-white pl-9 pr-3 text-sm outline-none transition focus:border-teal-500 focus:ring-4 focus:ring-teal-500/10 sm:w-64"
+                      className="h-11 w-full rounded-lg border border-slate-200 bg-white pl-9 pr-3 text-sm outline-none transition focus:border-teal-500 focus:ring-4 focus:ring-teal-500/10 sm:h-10 sm:w-64"
                       placeholder="Search player or team"
                     />
                   </label>
                   <select
                     value={sort}
                     onChange={(event) => setSort(event.target.value as SortMode)}
-                    className="h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm outline-none transition focus:border-teal-500 focus:ring-4 focus:ring-teal-500/10 sm:w-auto"
+                    className="h-11 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm outline-none transition focus:border-teal-500 focus:ring-4 focus:ring-teal-500/10 sm:h-10 sm:w-auto"
                     aria-label="Sort leaderboard"
                   >
                     <option value="rank">Sort by rank</option>
@@ -1487,7 +1487,7 @@ export function LeaderboardDashboard({ initialData }: Props) {
                     <button
                       type="button"
                       onClick={() => setView("table")}
-                      className={cn("flex h-8 flex-1 items-center justify-center rounded text-slate-500 sm:w-9 sm:flex-none", view === "table" && "bg-white text-slate-950 shadow-sm")}
+                      className={cn("flex h-10 flex-1 items-center justify-center rounded text-slate-500 sm:h-8 sm:w-9 sm:flex-none", view === "table" && "bg-white text-slate-950 shadow-sm")}
                       aria-label="Table view"
                     >
                       <List className="h-4 w-4" />
@@ -1495,7 +1495,7 @@ export function LeaderboardDashboard({ initialData }: Props) {
                     <button
                       type="button"
                       onClick={() => setView("cards")}
-                      className={cn("flex h-8 flex-1 items-center justify-center rounded text-slate-500 sm:w-9 sm:flex-none", view === "cards" && "bg-white text-slate-950 shadow-sm")}
+                      className={cn("flex h-10 flex-1 items-center justify-center rounded text-slate-500 sm:h-8 sm:w-9 sm:flex-none", view === "cards" && "bg-white text-slate-950 shadow-sm")}
                       aria-label="Card view"
                     >
                       <LayoutGrid className="h-4 w-4" />
@@ -1504,7 +1504,7 @@ export function LeaderboardDashboard({ initialData }: Props) {
                   <button
                     type="button"
                     onClick={resetFilters}
-                    className="inline-flex h-10 w-full items-center justify-center gap-2 rounded-lg border border-slate-200 bg-white px-3 text-sm font-medium text-slate-700 transition hover:border-slate-300 hover:bg-slate-50 sm:w-auto"
+                    className="inline-flex h-11 w-full items-center justify-center gap-2 rounded-lg border border-slate-200 bg-white px-3 text-sm font-medium text-slate-700 transition hover:border-slate-300 hover:bg-slate-50 sm:h-10 sm:w-auto"
                   >
                     <RotateCcw className="h-4 w-4" />
                     Reset
@@ -1512,7 +1512,7 @@ export function LeaderboardDashboard({ initialData }: Props) {
                 </div>
               </div>
 
-              <div className="mt-4 flex flex-wrap gap-2">
+              <div className="mt-4 grid grid-cols-2 gap-2 min-[520px]:flex min-[520px]:flex-wrap">
                 {[
                   ["all", "All"],
                   ["top10", "Top 10"],
@@ -1525,7 +1525,7 @@ export function LeaderboardDashboard({ initialData }: Props) {
                     type="button"
                     onClick={() => setFilter(value as FilterMode)}
                     className={cn(
-                      "h-9 shrink-0 rounded-lg border px-3 text-sm font-medium transition",
+                      "h-10 min-w-0 rounded-lg border px-3 text-sm font-medium transition",
                       filter === value
                         ? "border-slate-900 bg-slate-900 text-white"
                         : "border-slate-200 bg-white text-slate-600 hover:border-slate-300",
