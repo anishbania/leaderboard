@@ -1,6 +1,6 @@
 # World Cup Leaderboard
 
-Standalone public dashboard for the office World Cup 2026 predictor. The Google Sheet remains the source of truth; this app reads public CSV exports and optionally stores rank snapshots in Postgres for movement indicators.
+Standalone public dashboard for the office World Cup 2026 predictor. The Google Sheet remains the source of truth; this app reads public CSV exports and optionally stores rank snapshots in Postgres for rank movement indicators.
 
 ## Environment
 
