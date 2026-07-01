@@ -1352,7 +1352,7 @@ export function LeaderboardDashboard({ initialData }: Props) {
     <div className="min-h-screen bg-[radial-gradient(circle_at_top_left,rgba(20,184,166,0.10),transparent_28%),linear-gradient(180deg,#f8fafc_0%,#eef2f7_46%,#f8fafc_100%)] text-slate-950">
       <header className="border-b border-white/70 bg-white/85 shadow-[0_1px_0_rgba(15,23,42,0.04)] backdrop-blur-xl">
         <div className="mx-auto flex max-w-[1500px] flex-col gap-2 px-3 py-2.5 sm:px-5 lg:px-7 xl:px-8">
-          <div className="flex flex-col justify-between gap-2 md:flex-row md:items-center">
+          <div className="grid gap-2 md:grid-cols-[1fr_auto_1fr] md:items-center">
             <div className="flex min-w-0 items-center gap-3">
               <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-slate-950 text-white shadow-sm">
                 <Trophy className="h-4 w-4" aria-hidden="true" />
@@ -1362,7 +1362,10 @@ export function LeaderboardDashboard({ initialData }: Props) {
                 <h1 className="truncate text-lg font-semibold tracking-tight text-slate-950 sm:text-xl">Live leaderboard</h1>
               </div>
             </div>
-            <div className="flex flex-wrap items-center gap-1.5 text-xs">
+            <p className="text-center text-[11px] font-semibold uppercase tracking-wide text-slate-500 sm:text-xs">
+              Developed by Anish Baniya - IT Department
+            </p>
+            <div className="flex flex-wrap items-center gap-1.5 text-xs md:justify-end">
               <span
                 className={cn(
                   "inline-flex items-center gap-1.5 rounded-md border px-2 py-1 font-medium",
