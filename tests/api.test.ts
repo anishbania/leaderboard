@@ -25,6 +25,12 @@ const rankingCsv = `Rank,Name,Score,Exact Predictions,Correct Teams,Prize,Prize 
 3,Alan Turing,37,4,12,,
 `;
 
+const previousRankingCsv = `Rank,Name,Score,Exact Predictions,Correct Teams,Prize,Prize %
+1,Grace Hopper,39,5,13,"18,600.00",20%
+2,Ada Lovelace,40,6,14,"32,550.00",35%
+3,Alan Turing,37,4,12,,
+`;
+
 const participantsCsv = `Name,Paid,Received,Prediction Status,Supporting Team,Selected Winner
 Ada Lovelace,TRUE,500,Submitted,Brazil,Argentina
 Grace Hopper,TRUE,500,Submitted,England,France
@@ -38,7 +44,11 @@ describe("leaderboard API route", () => {
       "fetch",
       vi.fn(async (url: string) => ({
         ok: true,
-        text: async () => (url.includes("Participants+List") ? participantsCsv : rankingCsv),
+        text: async () => {
+          if (url.includes("Participants+List")) return participantsCsv;
+          if (url.includes("Previous+Ranking")) return previousRankingCsv;
+          return rankingCsv;
+        },
       })),
     );
   });

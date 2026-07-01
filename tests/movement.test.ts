@@ -55,6 +55,18 @@ describe("rank movement", () => {
     expect(rows[1].scoreDelta).toBe(0);
   });
 
+  it("matches previous sheet rankings by name when generated participant ids differ", () => {
+    const rows = applyRankMovement(current, [
+      { participantId: "sheet-ada-99", name: "Ada", rank: 2, score: 15 },
+      { participantId: "sheet-grace-98", name: "Grace", rank: 1, score: 18 },
+    ]);
+
+    expect(rows[0].previousRank).toBe(2);
+    expect(rows[0].rankDelta).toBe(1);
+    expect(rows[1].previousRank).toBe(1);
+    expect(rows[1].rankDelta).toBe(-1);
+  });
+
   it("detects unchanged snapshots", () => {
     expect(
       hasLeaderboardChanged(current, [

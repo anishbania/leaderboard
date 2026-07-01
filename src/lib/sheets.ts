@@ -2,12 +2,14 @@ import { unstable_cache } from "next/cache";
 import { parseParticipantsCsv, parseRankingCsv, mergeParticipantDetails } from "./csv";
 import { getLatestSnapshot, insertSnapshot } from "./db";
 import { parseLiveMatchdayCsv } from "./live-matchday";
+import type { SnapshotEntry } from "./movement";
 import { applyRankMovement, hasLeaderboardChanged } from "./movement";
 import { buildStats } from "./stats";
 import type { LeaderboardPayload, SheetHealth } from "./types";
 
 const sheetRefs = {
   ranking: { sheet: "Ranking" },
+  previousRanking: { sheet: "Previous Ranking" },
   participants: { sheet: "Participants List" },
   count: { sheet: "Count", gid: "81073229" },
   prediction: { sheet: "Prediction", gid: "1163047106" },
@@ -55,6 +57,17 @@ export async function readCurrentLeaderboard() {
   return mergeParticipantDetails(parseRankingCsv(rankingCsv), parseParticipantsCsv(participantsCsv));
 }
 
+export async function readPreviousRankingSnapshot(): Promise<SnapshotEntry[]> {
+  const previousRankingCsv = await fetchSheetCsv(sheetRefs.previousRanking);
+
+  return parseRankingCsv(previousRankingCsv).map((entry) => ({
+    participantId: entry.participantId,
+    name: entry.name,
+    rank: entry.rank,
+    score: entry.score,
+  }));
+}
+
 export async function readCurrentMatchdayData() {
   const [countCsv, predictionCsv] = await Promise.all([
     fetchSheetCsv(sheetRefs.count),
@@ -90,8 +103,13 @@ async function buildPayload({ persistSnapshot }: { persistSnapshot: boolean }): 
       console.error("Failed to read live matchday data", error);
       return undefined;
     });
+    const previousRankingSnapshot = await readPreviousRankingSnapshot().catch((error) => {
+      console.error("Failed to read Previous Ranking sheet", error);
+      return null;
+    });
     const previousSnapshot = await getLatestSnapshot();
-    const leaderboardWithMovement = applyRankMovement(leaderboard, previousSnapshot?.entries ?? null);
+    const movementSource = previousRankingSnapshot?.length ? previousRankingSnapshot : (previousSnapshot?.entries ?? null);
+    const leaderboardWithMovement = applyRankMovement(leaderboard, movementSource);
 
     let lastSyncedAt = previousSnapshot?.createdAt?.toISOString() ?? null;
     if (persistSnapshot && hasLeaderboardChanged(leaderboard, previousSnapshot?.entries ?? null)) {
@@ -104,7 +122,7 @@ async function buildPayload({ persistSnapshot }: { persistSnapshot: boolean }): 
       stats: buildStats(leaderboardWithMovement),
       matchdayData,
       lastSyncedAt,
-      movementAvailable: Boolean(previousSnapshot),
+      movementAvailable: Boolean(movementSource),
       health: {
         ok: true,
         message: `Loaded ${leaderboard.length} leaderboard rows from Google Sheets.`,

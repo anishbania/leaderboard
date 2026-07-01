@@ -2,9 +2,14 @@ import type { LeaderboardEntry } from "./types";
 
 export type SnapshotEntry = {
   participantId: string;
+  name?: string;
   rank: number;
   score: number;
 };
+
+function normalizeName(name: string) {
+  return name.trim().toLowerCase().replace(/\s+/g, " ");
+}
 
 export function applyRankMovement(
   current: LeaderboardEntry[],
@@ -20,9 +25,14 @@ export function applyRankMovement(
   }
 
   const previousById = new Map(previous.map((entry) => [entry.participantId, entry]));
+  const previousByName = new Map(
+    previous
+      .filter((entry) => entry.name)
+      .map((entry) => [normalizeName(entry.name ?? ""), entry]),
+  );
 
   return current.map((entry) => {
-    const previousEntry = previousById.get(entry.participantId);
+    const previousEntry = previousById.get(entry.participantId) ?? previousByName.get(normalizeName(entry.name));
 
     return {
       ...entry,
