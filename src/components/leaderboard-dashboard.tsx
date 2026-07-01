@@ -47,6 +47,8 @@ type AppTab = "leaderboard" | "predictions";
 type PredictionFilter = "all" | "team1" | "draw" | "team2";
 type Icon = ComponentType<SVGProps<SVGSVGElement>>;
 
+const knockoutStartMatchNo = 73;
+
 const teamPalette = [
   "#0f766e",
   "#b45309",
@@ -396,11 +398,15 @@ function PredictionCenter({
   leaderboard: LeaderboardEntry[];
   onSelectPlayer: (participantId: string) => void;
 }) {
-  const dates = useMemo(() => Array.from(new Set(matchdays.matches.map((match) => match.date))).sort(), []);
+  const bracketMatches = useMemo(
+    () => matchdays.matches.filter((match) => match.matchNo >= knockoutStartMatchNo),
+    [],
+  );
+  const dates = useMemo(() => Array.from(new Set(bracketMatches.map((match) => match.date))).sort(), [bracketMatches]);
   const [selectedDate, setSelectedDate] = useState(() => pickInitialDate(dates));
   const [predictionQuery, setPredictionQuery] = useState("");
   const [predictionFilter, setPredictionFilter] = useState<PredictionFilter>("all");
-  const dayMatches = useMemo(() => matchdays.matches.filter((match) => match.date === selectedDate), [selectedDate]);
+  const dayMatches = useMemo(() => bracketMatches.filter((match) => match.date === selectedDate), [bracketMatches, selectedDate]);
   const [selectedMatchNo, setSelectedMatchNo] = useState<number | null>(dayMatches[0]?.matchNo ?? null);
   const selectedMatch = dayMatches.find((match) => match.matchNo === selectedMatchNo) ?? dayMatches[0] ?? null;
   const playerByName = useMemo(() => new Map(leaderboard.map((entry) => [entry.name, entry])), [leaderboard]);
@@ -442,24 +448,30 @@ function PredictionCenter({
 
       const matchesFilter =
         predictionFilter === "all" ||
-        (predictionFilter === "team1" && selectedMatch && result === selectedMatch.team1) ||
-        (predictionFilter === "team2" && selectedMatch && result === selectedMatch.team2) ||
+        (predictionFilter === "team1" &&
+          prediction.goals1 != null &&
+          prediction.goals2 != null &&
+          prediction.goals1 > prediction.goals2) ||
+        (predictionFilter === "team2" &&
+          prediction.goals1 != null &&
+          prediction.goals2 != null &&
+          prediction.goals2 > prediction.goals1) ||
         (predictionFilter === "draw" && result === "Draw");
 
       return matchesQuery && matchesFilter;
     });
-  }, [predictionFilter, predictionQuery, predictions, selectedMatch]);
+  }, [predictionFilter, predictionQuery, predictions]);
 
   const resultFilters = selectedMatch
     ? [
         { value: "all" as const, label: "All picks" },
-        { value: "team1" as const, label: selectedMatch.team1 },
+        { value: "team1" as const, label: "First team wins" },
         { value: "draw" as const, label: "Draw" },
-        { value: "team2" as const, label: selectedMatch.team2 },
+        { value: "team2" as const, label: "Second team wins" },
       ]
     : [];
   const selectedDateIndex = Math.max(0, dates.indexOf(selectedDate));
-  const minWorldCupDate = dates[0] ?? "2026-06-12";
+  const minWorldCupDate = dates[0] ?? "2026-06-29";
   const maxWorldCupDate = dates.at(-1) ?? "2026-07-20";
 
   function selectDate(date: string) {
@@ -467,7 +479,7 @@ function PredictionCenter({
       ? date
       : (dates.find((matchDate) => matchDate >= date) ?? dates.at(-1) ?? date);
     setSelectedDate(nextDate);
-    const firstMatch = matchdays.matches.find((match) => match.date === nextDate);
+    const firstMatch = bracketMatches.find((match) => match.date === nextDate);
     setSelectedMatchNo(firstMatch?.matchNo ?? null);
     setPredictionFilter("all");
     setPredictionQuery("");
@@ -480,10 +492,10 @@ function PredictionCenter({
         <div className="absolute inset-x-0 bottom-0 h-px bg-gradient-to-r from-transparent via-teal-300/70 to-transparent" />
         <div className="relative flex flex-col justify-between gap-4 lg:flex-row lg:items-end">
           <div className="min-w-0">
-            <p className="text-xs font-semibold uppercase text-teal-200">Prediction Center</p>
-            <h2 className="mt-1 text-xl font-semibold tracking-tight sm:text-3xl">Matchday pick board</h2>
+            <p className="text-xs font-semibold uppercase text-teal-200">Bracket Center</p>
+            <h2 className="mt-1 text-xl font-semibold tracking-tight sm:text-3xl">Knockout pick board</h2>
             <p className="mt-2 max-w-2xl text-sm text-slate-300">
-              Choose a fixture and scan how everyone sees the game going.
+              Choose a bracket slot and scan each person&apos;s Round of 32 through Final prediction.
             </p>
           </div>
           <div className="grid grid-cols-1 gap-2 text-center text-xs min-[420px]:grid-cols-3 lg:min-w-[300px]">
@@ -506,7 +518,7 @@ function PredictionCenter({
       <div className="rounded-xl border border-slate-200/80 bg-white/90 p-3 shadow-[0_8px_30px_rgba(15,23,42,0.05)] backdrop-blur">
         <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
           <div>
-            <p className="text-xs font-semibold uppercase text-slate-500">World Cup 2026 calendar</p>
+              <p className="text-xs font-semibold uppercase text-slate-500">Knockout calendar</p>
             <p className="mt-1 text-sm font-semibold text-slate-950">{formatMatchDate(selectedDate)}</p>
           </div>
           <div className="grid gap-2 sm:grid-cols-[1fr_auto_1fr] md:flex md:items-center">
@@ -516,7 +528,7 @@ function PredictionCenter({
               disabled={selectedDateIndex <= 0}
               className="h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm font-medium text-slate-700 transition hover:border-slate-300 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40 md:w-auto"
             >
-              Previous matchday
+              Previous bracket day
             </button>
             <input
               type="date"
@@ -525,7 +537,7 @@ function PredictionCenter({
               max={maxWorldCupDate}
               onChange={(event) => selectDate(event.target.value)}
               className="h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-950 outline-none transition focus:border-teal-500 focus:ring-4 focus:ring-teal-500/10 md:w-auto"
-              aria-label="Select World Cup 2026 match date"
+              aria-label="Select World Cup 2026 knockout date"
             />
             <button
               type="button"
@@ -533,7 +545,7 @@ function PredictionCenter({
               disabled={selectedDateIndex >= dates.length - 1}
               className="h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm font-medium text-slate-700 transition hover:border-slate-300 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40 md:w-auto"
             >
-              Next matchday
+              Next bracket day
             </button>
           </div>
         </div>
@@ -542,7 +554,7 @@ function PredictionCenter({
       <div className="grid gap-3 lg:grid-cols-[300px_minmax(0,1fr)] xl:grid-cols-[320px_minmax(0,1fr)]">
         <div className="rounded-xl border border-slate-200/80 bg-white/90 p-3 shadow-[0_8px_30px_rgba(15,23,42,0.05)]">
           <div className="mb-2 flex items-center justify-between">
-            <h3 className="text-sm font-semibold text-slate-950">Fixtures</h3>
+            <h3 className="text-sm font-semibold text-slate-950">Bracket slots</h3>
             <span className="text-xs text-slate-500">{formatMatchDate(selectedDate)}</span>
           </div>
           <div className="grid gap-2 md:grid-cols-2 lg:grid-cols-1">
@@ -583,7 +595,7 @@ function PredictionCenter({
               <div className="rounded-xl border border-slate-200/80 bg-white p-3 shadow-[0_8px_30px_rgba(15,23,42,0.05)] sm:p-4">
                 <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
                   <div className="min-w-0">
-                    <p className="text-xs font-semibold uppercase text-slate-500">Selected fixture</p>
+                    <p className="text-xs font-semibold uppercase text-slate-500">Selected bracket slot</p>
                     <h3 className="mt-1 break-words text-lg font-semibold text-slate-950 sm:text-xl">
                       {selectedMatch.team1} <span className="text-slate-400">vs</span> {selectedMatch.team2}
                     </h3>

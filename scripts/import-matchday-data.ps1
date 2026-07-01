@@ -209,8 +209,13 @@ try {
     }
   }
 
+  $rowToMatchNo = @{}
   for ($index = 0; $index -lt $knockoutRows.Count -and $index -lt 32; $index++) {
     $rowToMatchNo[$knockoutRows[$index]] = 73 + $index
+  }
+
+  if ($knockoutRows.Count -lt 32) {
+    throw "Expected 32 knockout prediction rows from Round of 32 through Final, found $($knockoutRows.Count)."
   }
 
   $predictionsByMatch = [ordered]@{}
