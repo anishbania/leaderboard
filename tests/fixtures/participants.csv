@@ -1,0 +1,5 @@
+Name,Paid,Received,Prediction Status,Supporting Team,Selected Winner
+Ada Lovelace,TRUE,500,Submitted,Brazil,Argentina
+Grace Hopper,TRUE,500,Submitted,England,France
+Alan Turing,FALSE,0,Pending,Spain,Brazil
+
