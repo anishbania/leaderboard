@@ -1,29 +1,36 @@
 import { unstable_cache } from "next/cache";
 import { parseParticipantsCsv, parseRankingCsv, mergeParticipantDetails } from "./csv";
 import { getLatestSnapshot, insertSnapshot } from "./db";
+import { parseLiveMatchdayCsv } from "./live-matchday";
 import { applyRankMovement, hasLeaderboardChanged } from "./movement";
 import { buildStats } from "./stats";
 import type { LeaderboardPayload, SheetHealth } from "./types";
 
-const sheetNames = {
-  ranking: "Ranking",
-  participants: "Participants List",
+const sheetRefs = {
+  ranking: { sheet: "Ranking" },
+  participants: { sheet: "Participants List" },
+  count: { sheet: "Count", gid: "81073229" },
+  prediction: { sheet: "Prediction", gid: "1163047106" },
 };
 
-function sheetUrl(sheetName: string) {
+function sheetUrl(sheetRef: { sheet: string; gid?: string }) {
   const sheetId = process.env.GOOGLE_SHEET_ID;
   if (!sheetId) return null;
 
   const params = new URLSearchParams({
     tqx: "out:csv",
-    sheet: sheetName,
   });
+  if (sheetRef.gid) {
+    params.set("gid", sheetRef.gid);
+  } else {
+    params.set("sheet", sheetRef.sheet);
+  }
 
   return `https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq?${params.toString()}`;
 }
 
-async function fetchSheetCsv(sheetName: string) {
-  const url = sheetUrl(sheetName);
+async function fetchSheetCsv(sheetRef: { sheet: string; gid?: string }) {
+  const url = sheetUrl(sheetRef);
   if (!url) {
     throw new Error("GOOGLE_SHEET_ID is not configured");
   }
@@ -33,7 +40,7 @@ async function fetchSheetCsv(sheetName: string) {
   });
 
   if (!response.ok) {
-    throw new Error(`Google Sheets returned ${response.status} for ${sheetName}`);
+    throw new Error(`Google Sheets returned ${response.status} for ${sheetRef.sheet}`);
   }
 
   return response.text();
@@ -41,11 +48,20 @@ async function fetchSheetCsv(sheetName: string) {
 
 export async function readCurrentLeaderboard() {
   const [rankingCsv, participantsCsv] = await Promise.all([
-    fetchSheetCsv(sheetNames.ranking),
-    fetchSheetCsv(sheetNames.participants),
+    fetchSheetCsv(sheetRefs.ranking),
+    fetchSheetCsv(sheetRefs.participants),
   ]);
 
   return mergeParticipantDetails(parseRankingCsv(rankingCsv), parseParticipantsCsv(participantsCsv));
+}
+
+export async function readCurrentMatchdayData() {
+  const [countCsv, predictionCsv] = await Promise.all([
+    fetchSheetCsv(sheetRefs.count),
+    fetchSheetCsv(sheetRefs.prediction),
+  ]);
+
+  return parseLiveMatchdayCsv(countCsv, predictionCsv);
 }
 
 async function buildPayload({ persistSnapshot }: { persistSnapshot: boolean }): Promise<LeaderboardPayload> {
@@ -70,6 +86,10 @@ async function buildPayload({ persistSnapshot }: { persistSnapshot: boolean }): 
 
   try {
     const leaderboard = await readCurrentLeaderboard();
+    const matchdayData = await readCurrentMatchdayData().catch((error) => {
+      console.error("Failed to read live matchday data", error);
+      return undefined;
+    });
     const previousSnapshot = await getLatestSnapshot();
     const leaderboardWithMovement = applyRankMovement(leaderboard, previousSnapshot?.entries ?? null);
 
@@ -82,6 +102,7 @@ async function buildPayload({ persistSnapshot }: { persistSnapshot: boolean }): 
     return {
       leaderboard: leaderboardWithMovement,
       stats: buildStats(leaderboardWithMovement),
+      matchdayData,
       lastSyncedAt,
       movementAvailable: Boolean(previousSnapshot),
       health: {

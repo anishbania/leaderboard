@@ -33,8 +33,8 @@ import {
 } from "recharts";
 import type { ComponentType, KeyboardEvent, SVGProps } from "react";
 import type { LeaderboardEntry, LeaderboardPayload, MatchdayData, MatchPrediction } from "@/lib/types";
-import { matchdayData } from "@/lib/matchday-data";
-import { cn, compactNumber, formatCurrency, formatPercent } from "@/lib/utils";
+import { matchdayData as fallbackMatchdayData } from "@/lib/matchday-data";
+import { cn, compactNumber, formatCurrency } from "@/lib/utils";
 
 type Props = {
   initialData: LeaderboardPayload;
@@ -48,6 +48,32 @@ type PredictionFilter = "all" | "team1" | "draw" | "team2";
 type Icon = ComponentType<SVGProps<SVGSVGElement>>;
 
 const knockoutStartMatchNo = 73;
+const bracketSimulationCount = 3000;
+const bracketSeed = 20260720;
+const bracketSlots = Array.from({ length: 32 }, (_, index) => knockoutStartMatchNo + index);
+const bracketChildren: Record<number, [number, number]> = {
+  89: [74, 77],
+  90: [73, 75],
+  91: [76, 78],
+  92: [79, 80],
+  93: [83, 84],
+  94: [81, 82],
+  95: [86, 88],
+  96: [85, 87],
+  97: [89, 90],
+  98: [93, 94],
+  99: [91, 92],
+  100: [95, 96],
+  101: [97, 98],
+  102: [99, 100],
+  104: [101, 102],
+};
+const simulationOrder = [
+  73, 74, 75, 76, 77, 78, 79, 80,
+  81, 82, 83, 84, 85, 86, 87, 88,
+  89, 90, 91, 92, 93, 94, 95, 96,
+  97, 98, 99, 100, 101, 102, 103, 104,
+];
 
 const teamPalette = [
   "#0f766e",
@@ -60,7 +86,7 @@ const teamPalette = [
   "#475569",
 ];
 
-const matchdays = matchdayData as MatchdayData;
+const fallbackMatchdays = fallbackMatchdayData as MatchdayData;
 
 function teamColor(team: string | null | undefined) {
   if (!team) return "#64748b";
@@ -164,6 +190,238 @@ function scoreline(prediction: MatchPrediction) {
   return `${prediction.goals1}-${prediction.goals2}`;
 }
 
+function formatProbability(value: number | null | undefined) {
+  if (value == null || Number.isNaN(value)) return "-";
+  if (value > 0 && value < 0.001) return "<0.1%";
+  return new Intl.NumberFormat("en-US", {
+    style: "percent",
+    minimumFractionDigits: value > 0 && value < 0.1 ? 1 : 0,
+    maximumFractionDigits: 1,
+  }).format(value);
+}
+
+function predictedWinner(prediction: MatchPrediction | undefined) {
+  if (!prediction || prediction.goals1 == null || prediction.goals2 == null) return null;
+  if (prediction.goals1 > prediction.goals2) return prediction.team1;
+  if (prediction.goals2 > prediction.goals1) return prediction.team2;
+  return null;
+}
+
+function roundWeight(matchNo: number) {
+  if (matchNo >= 73 && matchNo <= 88) return 1;
+  if (matchNo >= 89 && matchNo <= 96) return 2;
+  if (matchNo >= 97 && matchNo <= 100) return 4;
+  if (matchNo >= 101 && matchNo <= 103) return 8;
+  return 16;
+}
+
+function seededRandom(seed: number) {
+  let state = seed >>> 0;
+  return () => {
+    state = (state * 1664525 + 1013904223) >>> 0;
+    return state / 4294967296;
+  };
+}
+
+function buildPredictionIndex(matchdayData: MatchdayData) {
+  const byName = new Map<string, Map<number, MatchPrediction>>();
+  for (const matchNo of bracketSlots) {
+    for (const prediction of matchdayData.predictionsByMatch[String(matchNo)] ?? []) {
+      const person = byName.get(prediction.name) ?? new Map<number, MatchPrediction>();
+      person.set(matchNo, prediction);
+      byName.set(prediction.name, person);
+    }
+  }
+  return byName;
+}
+
+function validatePersonBracket(predictions: Map<number, MatchPrediction>) {
+  const issues: string[] = [];
+
+  for (const matchNo of bracketSlots) {
+    const prediction = predictions.get(matchNo);
+    if (!prediction) {
+      issues.push(`Missing match ${matchNo}`);
+      continue;
+    }
+    if (prediction.goals1 == null || prediction.goals2 == null) {
+      issues.push(`Missing score for match ${matchNo}`);
+    }
+  }
+
+  for (const [matchNoText, children] of Object.entries(bracketChildren)) {
+    const matchNo = Number(matchNoText);
+    const prediction = predictions.get(matchNo);
+    const leftChild = predictions.get(children[0]);
+    const rightChild = predictions.get(children[1]);
+
+    if (!prediction || !leftChild || !rightChild) continue;
+    if (![leftChild.team1, leftChild.team2].includes(prediction.team1)) {
+      issues.push(`Match ${matchNo} first team does not come from match ${children[0]}`);
+    }
+    if (![rightChild.team1, rightChild.team2].includes(prediction.team2)) {
+      issues.push(`Match ${matchNo} second team does not come from match ${children[1]}`);
+    }
+  }
+
+  const thirdPlace = predictions.get(103);
+  const final = predictions.get(104);
+  const semiOne = predictions.get(101);
+  const semiTwo = predictions.get(102);
+  if (thirdPlace && final && semiOne && semiTwo) {
+    const semiOneLoser = [semiOne.team1, semiOne.team2].find((team) => team !== final.team1);
+    const semiTwoLoser = [semiTwo.team1, semiTwo.team2].find((team) => team !== final.team2);
+    if (semiOneLoser && thirdPlace.team1 !== semiOneLoser) {
+      issues.push("Third-place first team does not match the semifinal 1 loser");
+    }
+    if (semiTwoLoser && thirdPlace.team2 !== semiTwoLoser) {
+      issues.push("Third-place second team does not match the semifinal 2 loser");
+    }
+  }
+
+  return issues;
+}
+
+function buildBracketOutlook(leaderboard: LeaderboardEntry[], matchdayData: MatchdayData) {
+  const predictionIndex = buildPredictionIndex(matchdayData);
+  const entryByName = new Map(leaderboard.map((entry) => [entry.name, entry]));
+  const names = Array.from(new Set([...leaderboard.map((entry) => entry.name), ...predictionIndex.keys()]));
+  const matchByNo = new Map(matchdayData.matches.map((match) => [match.matchNo, match]));
+  const teamStrength = new Map<string, number>();
+
+  for (const matchNo of bracketSlots) {
+    const weight = roundWeight(matchNo);
+    for (const prediction of matchdayData.predictionsByMatch[String(matchNo)] ?? []) {
+      teamStrength.set(prediction.team1, (teamStrength.get(prediction.team1) ?? 1) + 0.1);
+      teamStrength.set(prediction.team2, (teamStrength.get(prediction.team2) ?? 1) + 0.1);
+      const winner = predictedWinner(prediction);
+      if (winner) {
+        teamStrength.set(winner, (teamStrength.get(winner) ?? 1) + weight);
+      }
+    }
+  }
+
+  const validations = new Map(
+    names.map((name) => {
+      const issues = validatePersonBracket(predictionIndex.get(name) ?? new Map<number, MatchPrediction>());
+      return [name, issues];
+    }),
+  );
+  const resultByName = new Map(
+    names.map((name) => {
+      const entry = entryByName.get(name);
+      return [
+        name,
+        {
+          name,
+          currentRank: entry?.rank ?? null,
+          currentScore: entry?.score ?? 0,
+          winCount: 0,
+          scoreTotal: 0,
+          bestScore: 0,
+          champion: predictedWinner(predictionIndex.get(name)?.get(104)) ?? "No winner",
+          issues: validations.get(name) ?? [],
+        },
+      ];
+    }),
+  );
+
+  const random = seededRandom(bracketSeed);
+  for (let simulation = 0; simulation < bracketSimulationCount; simulation++) {
+    const actualTeams = new Map<number, [string, string]>();
+    const actualWinners = new Map<number, string>();
+    const actualLosers = new Map<number, string>();
+
+    for (const matchNo of simulationOrder) {
+      const children = bracketChildren[matchNo];
+      let teams: [string, string] | null = null;
+
+      const lockedResult = matchdayData.actualResults?.[String(matchNo)];
+
+      if (lockedResult) {
+        teams = [lockedResult.team1, lockedResult.team2];
+      } else if (matchNo >= 73 && matchNo <= 88) {
+        const match = matchByNo.get(matchNo);
+        if (match) teams = [match.team1, match.team2];
+      } else if (matchNo === 103) {
+        const firstLoser = actualLosers.get(101);
+        const secondLoser = actualLosers.get(102);
+        if (firstLoser && secondLoser) teams = [firstLoser, secondLoser];
+      } else if (children) {
+        const firstWinner = actualWinners.get(children[0]);
+        const secondWinner = actualWinners.get(children[1]);
+        if (firstWinner && secondWinner) teams = [firstWinner, secondWinner];
+      }
+
+      if (!teams) continue;
+
+      const firstStrength = teamStrength.get(teams[0]) ?? 1;
+      const secondStrength = teamStrength.get(teams[1]) ?? 1;
+      const firstWinChance = firstStrength / (firstStrength + secondStrength);
+      const winner = lockedResult ? lockedResult.winner : random() <= firstWinChance ? teams[0] : teams[1];
+      const loser = winner === teams[0] ? teams[1] : teams[0];
+
+      actualTeams.set(matchNo, teams);
+      actualWinners.set(matchNo, winner);
+      actualLosers.set(matchNo, loser);
+    }
+
+    const scores = new Map<string, number>();
+    for (const name of names) {
+      const personPredictions = predictionIndex.get(name);
+      const currentScore = entryByName.get(name)?.score ?? 0;
+      let score = currentScore;
+
+      for (const matchNo of bracketSlots) {
+        const prediction = personPredictions?.get(matchNo);
+        const actualMatchTeams = actualTeams.get(matchNo);
+        const actualWinner = actualWinners.get(matchNo);
+        if (!prediction || !actualMatchTeams || !actualWinner) continue;
+
+        const weight = roundWeight(matchNo);
+        if ([prediction.team1, prediction.team2].includes(actualMatchTeams[0])) score += weight * 0.25;
+        if ([prediction.team1, prediction.team2].includes(actualMatchTeams[1])) score += weight * 0.25;
+        if (predictedWinner(prediction) === actualWinner) score += weight;
+      }
+
+      scores.set(name, score);
+      const result = resultByName.get(name);
+      if (result) {
+        result.scoreTotal += score;
+        result.bestScore = Math.max(result.bestScore, score);
+      }
+    }
+
+    const topScore = Math.max(...scores.values());
+    const winners = Array.from(scores, ([name, score]) => ({ name, score })).filter((item) => item.score === topScore);
+    for (const winner of winners) {
+      const result = resultByName.get(winner.name);
+      if (result) result.winCount += 1 / winners.length;
+    }
+  }
+
+  const standings = Array.from(resultByName.values())
+    .map((item) => ({
+      ...item,
+      winChance: item.winCount / bracketSimulationCount,
+      averageScore: item.scoreTotal / bracketSimulationCount,
+      validBracket: item.issues.length === 0,
+    }))
+    .sort((a, b) => b.winChance - a.winChance || b.averageScore - a.averageScore || a.name.localeCompare(b.name));
+
+  return {
+    standings,
+    validBracketCount: standings.filter((item) => item.validBracket).length,
+    simulationCount: bracketSimulationCount,
+    topChampion: Array.from(
+      standings.reduce((counts, item) => counts.set(item.champion, (counts.get(item.champion) ?? 0) + 1), new Map<string, number>()),
+      ([team, count]) => ({ team, count }),
+    ).sort((a, b) => b.count - a.count)[0],
+  };
+}
+
+type BracketOutlook = ReturnType<typeof buildBracketOutlook>;
+
 function formatMatchDate(value: string) {
   return new Intl.DateTimeFormat("en-US", {
     month: "short",
@@ -185,11 +443,12 @@ function MatchdayPredictions({
   leaderboard: LeaderboardEntry[];
   onSelectPlayer: (participantId: string) => void;
 }) {
-  const dates = useMemo(() => Array.from(new Set(matchdays.matches.map((match) => match.date))).sort(), []);
+  const matchdays = fallbackMatchdays;
+  const dates = useMemo(() => Array.from(new Set(matchdays.matches.map((match) => match.date))).sort(), [matchdays.matches]);
   const [selectedDate, setSelectedDate] = useState(() => pickInitialDate(dates));
   const dayMatches = useMemo(
     () => matchdays.matches.filter((match) => match.date === selectedDate),
-    [selectedDate],
+    [matchdays.matches, selectedDate],
   );
   const [selectedMatchNo, setSelectedMatchNo] = useState<number | null>(dayMatches[0]?.matchNo ?? null);
   const selectedMatch = dayMatches.find((match) => match.matchNo === selectedMatchNo) ?? dayMatches[0] ?? null;
@@ -198,7 +457,7 @@ function MatchdayPredictions({
   const predictions = useMemo(() => {
     if (!selectedMatch) return [];
     return matchdays.predictionsByMatch[String(selectedMatch.matchNo)] ?? [];
-  }, [selectedMatch]);
+  }, [matchdays.predictionsByMatch, selectedMatch]);
 
   const consensus = useMemo(() => {
     const counts = new Map<string, number>();
@@ -393,14 +652,18 @@ function StatCard({
 
 function PredictionCenter({
   leaderboard,
+  matchdayData,
+  bracketOutlook,
   onSelectPlayer,
 }: {
   leaderboard: LeaderboardEntry[];
+  matchdayData: MatchdayData;
+  bracketOutlook: BracketOutlook;
   onSelectPlayer: (participantId: string) => void;
 }) {
   const bracketMatches = useMemo(
-    () => matchdays.matches.filter((match) => match.matchNo >= knockoutStartMatchNo),
-    [],
+    () => matchdayData.matches.filter((match) => match.matchNo >= knockoutStartMatchNo),
+    [matchdayData],
   );
   const dates = useMemo(() => Array.from(new Set(bracketMatches.map((match) => match.date))).sort(), [bracketMatches]);
   const [selectedDate, setSelectedDate] = useState(() => pickInitialDate(dates));
@@ -410,11 +673,13 @@ function PredictionCenter({
   const [selectedMatchNo, setSelectedMatchNo] = useState<number | null>(dayMatches[0]?.matchNo ?? null);
   const selectedMatch = dayMatches.find((match) => match.matchNo === selectedMatchNo) ?? dayMatches[0] ?? null;
   const playerByName = useMemo(() => new Map(leaderboard.map((entry) => [entry.name, entry])), [leaderboard]);
+  const topOutlook = bracketOutlook.standings[0];
+  const shownOutlook = useMemo(() => bracketOutlook.standings.slice(0, 8), [bracketOutlook]);
 
   const predictions = useMemo(() => {
     if (!selectedMatch) return [];
-    return matchdays.predictionsByMatch[String(selectedMatch.matchNo)] ?? [];
-  }, [selectedMatch]);
+    return matchdayData.predictionsByMatch[String(selectedMatch.matchNo)] ?? [];
+  }, [matchdayData, selectedMatch]);
 
   const consensus = useMemo(() => {
     const counts = new Map<string, number>();
@@ -511,6 +776,93 @@ function PredictionCenter({
               <p className="text-slate-300">Top call</p>
               <p className="mt-1 max-w-24 truncate text-lg font-semibold">{consensus[0]?.result ?? "-"}</p>
             </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_360px]">
+        <div className="rounded-xl border border-slate-200/80 bg-white p-3 shadow-[0_8px_30px_rgba(15,23,42,0.05)] sm:p-4">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <p className="text-xs font-semibold uppercase text-slate-500">Winning chance model</p>
+              <h3 className="mt-1 text-base font-semibold text-slate-950 sm:text-lg">
+                {topOutlook ? `${topOutlook.name} leads at ${formatProbability(topOutlook.winChance)}` : "No bracket data"}
+              </h3>
+              <p className="mt-1 max-w-2xl text-sm text-slate-500">
+                Fixed-seed simulations use everyone&apos;s bracket picks to infer team strength, then score each bracket against the official knockout slot path.
+              </p>
+            </div>
+            <div className="grid grid-cols-3 gap-2 text-center text-xs sm:min-w-[300px]">
+              <div className="rounded-lg border border-slate-200 bg-slate-50 px-2 py-2">
+                <p className="text-slate-500">Runs</p>
+                <p className="mt-1 font-semibold text-slate-950">{compactNumber(bracketOutlook.simulationCount)}</p>
+              </div>
+              <div className="rounded-lg border border-slate-200 bg-slate-50 px-2 py-2">
+                <p className="text-slate-500">Valid</p>
+                <p className="mt-1 font-semibold text-slate-950">
+                  {bracketOutlook.validBracketCount}/{bracketOutlook.standings.length}
+                </p>
+              </div>
+              <div className="rounded-lg border border-slate-200 bg-slate-50 px-2 py-2">
+                <p className="text-slate-500">Champion</p>
+                <p className="mt-1 truncate font-semibold text-slate-950">{bracketOutlook.topChampion?.team ?? "-"}</p>
+              </div>
+            </div>
+          </div>
+
+          <div className="mt-4 overflow-hidden rounded-lg border border-slate-200">
+            <table className="w-full text-left text-sm">
+              <thead className="bg-slate-50 text-xs uppercase text-slate-500">
+                <tr>
+                  <th className="px-3 py-2 font-semibold">Person</th>
+                  <th className="px-3 py-2 text-right font-semibold">Chance</th>
+                  <th className="px-3 py-2 text-right font-semibold">Avg</th>
+                  <th className="px-3 py-2 font-semibold">Champion</th>
+                  <th className="px-3 py-2 text-right font-semibold">Bracket</th>
+                </tr>
+              </thead>
+              <tbody>
+                {shownOutlook.map((item) => (
+                  <tr key={item.name} className="border-t border-slate-100">
+                    <td className="px-3 py-2 font-medium text-slate-950">{item.name}</td>
+                    <td className="px-3 py-2 text-right font-semibold text-teal-700">{formatProbability(item.winChance)}</td>
+                    <td className="px-3 py-2 text-right text-slate-700">{compactNumber(item.averageScore)}</td>
+                    <td className="px-3 py-2 text-slate-700">{item.champion}</td>
+                    <td className="px-3 py-2 text-right">
+                      <span
+                        className={cn(
+                          "inline-flex rounded-md px-2 py-1 text-xs font-semibold",
+                          item.validBracket ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700",
+                        )}
+                      >
+                        {item.validBracket ? "Valid" : `${item.issues.length} flags`}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div className="rounded-xl border border-slate-200/80 bg-white p-3 shadow-[0_8px_30px_rgba(15,23,42,0.05)] sm:p-4">
+          <p className="text-xs font-semibold uppercase text-slate-500">Bracket validation</p>
+          <h3 className="mt-1 text-base font-semibold text-slate-950">FIFA path check</h3>
+          <p className="mt-2 text-sm text-slate-500">
+            Each later-round pick is checked against the official slot dependency, including semifinal losers feeding the third-place match.
+          </p>
+          <div className="mt-3 space-y-2">
+            {bracketOutlook.standings.filter((item) => !item.validBracket).slice(0, 4).map((item) => (
+              <div key={item.name} className="rounded-lg border border-amber-200 bg-amber-50 p-2">
+                <p className="text-sm font-semibold text-slate-950">{item.name}</p>
+                <p className="mt-1 text-xs text-amber-800">{item.issues[0]}</p>
+              </div>
+            ))}
+            {bracketOutlook.validBracketCount === bracketOutlook.standings.length ? (
+              <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-2 text-sm font-medium text-emerald-700">
+                Every imported bracket follows the official slot path.
+              </div>
+            ) : null}
           </div>
         </div>
       </div>
@@ -812,7 +1164,17 @@ function Movers({ title, entries, positive }: { title: string; entries: Leaderbo
   );
 }
 
-function PlayerCard({ entry, selected, onClick }: { entry: LeaderboardEntry; selected: boolean; onClick: () => void }) {
+function PlayerCard({
+  entry,
+  selected,
+  winningProbability,
+  onClick,
+}: {
+  entry: LeaderboardEntry;
+  selected: boolean;
+  winningProbability: number | null;
+  onClick: () => void;
+}) {
   function handleKeyDown(event: KeyboardEvent<HTMLElement>) {
     if (event.key === "Enter" || event.key === " ") {
       event.preventDefault();
@@ -857,8 +1219,8 @@ function PlayerCard({ entry, selected, onClick }: { entry: LeaderboardEntry; sel
           <p className="font-semibold text-slate-950">{formatCurrency(entry.prize)}</p>
         </div>
         <div>
-          <p className="text-xs text-slate-500">Share</p>
-          <p className="font-semibold text-slate-950">{formatPercent(entry.prizePercent)}</p>
+          <p className="text-xs text-slate-500">Winning probability</p>
+          <p className="font-semibold text-slate-950">{formatProbability(winningProbability)}</p>
         </div>
       </div>
     </motion.article>
@@ -924,6 +1286,15 @@ export function LeaderboardDashboard({ initialData }: Props) {
 
   const stats = initialData.stats;
   const maxScore = initialData.leaderboard[0]?.score ?? 1;
+  const currentMatchdayData = initialData.matchdayData ?? fallbackMatchdays;
+  const bracketOutlook = useMemo(
+    () => buildBracketOutlook(initialData.leaderboard, currentMatchdayData),
+    [currentMatchdayData, initialData.leaderboard],
+  );
+  const winningProbabilityByName = useMemo(
+    () => new Map(bracketOutlook.standings.map((entry) => [entry.name, entry.winChance])),
+    [bracketOutlook],
+  );
 
   const selectedEntry = useMemo(
     () => initialData.leaderboard.find((entry) => entry.participantId === selectedId) ?? null,
@@ -1055,7 +1426,7 @@ export function LeaderboardDashboard({ initialData }: Props) {
                 "hidden rounded px-1.5 py-0.5 text-[11px] sm:inline",
                 activeTab === "predictions" ? "bg-white/15 text-white" : "bg-slate-100 text-slate-500",
               )}>
-                {matchdays.matches.length}
+                {currentMatchdayData.matches.length}
               </span>
             </button>
             </div>
@@ -1063,10 +1434,15 @@ export function LeaderboardDashboard({ initialData }: Props) {
         </section>
 
         {activeTab === "predictions" ? (
-          <PredictionCenter leaderboard={initialData.leaderboard} onSelectPlayer={(participantId) => {
-            setSelectedId(participantId);
-            setActiveTab("leaderboard");
-          }} />
+          <PredictionCenter
+            leaderboard={initialData.leaderboard}
+            matchdayData={currentMatchdayData}
+            bracketOutlook={bracketOutlook}
+            onSelectPlayer={(participantId) => {
+              setSelectedId(participantId);
+              setActiveTab("leaderboard");
+            }}
+          />
         ) : (
           <>
           <Podium leaders={initialData.leaderboard} />
@@ -1180,7 +1556,7 @@ export function LeaderboardDashboard({ initialData }: Props) {
                         <th className="w-[72px] px-2 py-3 text-right font-semibold">Score</th>
                         <th className="w-[18%] px-2 py-3 font-semibold">Score pace</th>
                         <th className="w-[120px] px-2 py-3 text-right font-semibold">Prize</th>
-                        <th className="w-[76px] px-2 py-3 text-right font-semibold">Share</th>
+                        <th className="w-[126px] px-2 py-3 text-right font-semibold">Winning probability</th>
                         <th className="w-[150px] py-3 pl-2 pr-4 font-semibold">Winner</th>
                       </tr>
                     </thead>
@@ -1220,7 +1596,9 @@ export function LeaderboardDashboard({ initialData }: Props) {
                               </div>
                             </td>
                             <td className="px-2 py-3 text-right font-semibold">{formatCurrency(entry.prize)}</td>
-                            <td className="px-2 py-3 text-right">{formatPercent(entry.prizePercent)}</td>
+                            <td className="px-2 py-3 text-right font-semibold text-teal-700">
+                              {formatProbability(winningProbabilityByName.get(entry.name))}
+                            </td>
                             <td className="py-3 pl-2 pr-4"><TeamPill team={entry.selectedWinner} active={teamFilter === entry.selectedWinner} onClick={() => setTeamFilter(entry.selectedWinner)} /></td>
                           </motion.tr>
                         ))}
@@ -1236,6 +1614,7 @@ export function LeaderboardDashboard({ initialData }: Props) {
                       key={entry.participantId}
                       entry={entry}
                       selected={selectedId === entry.participantId}
+                      winningProbability={winningProbabilityByName.get(entry.name) ?? null}
                       onClick={() => setSelectedId(entry.participantId)}
                     />
                   ))}
@@ -1250,6 +1629,7 @@ export function LeaderboardDashboard({ initialData }: Props) {
                       key={entry.participantId}
                       entry={entry}
                       selected={selectedId === entry.participantId}
+                      winningProbability={winningProbabilityByName.get(entry.name) ?? null}
                       onClick={() => setSelectedId(entry.participantId)}
                     />
                   ))}

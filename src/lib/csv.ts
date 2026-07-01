@@ -33,7 +33,7 @@ export function parseCsv(csv: string): CsvRecord[] {
   );
 }
 
-function parseCsvRows(csv: string): string[][] {
+export function parseCsvRows(csv: string): string[][] {
   const parsed = Papa.parse<string[]>(csv, {
     header: false,
     skipEmptyLines: "greedy",
