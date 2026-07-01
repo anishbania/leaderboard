@@ -50,6 +50,7 @@ export type DashboardStats = {
 export type LeaderboardPayload = {
   leaderboard: LeaderboardEntry[];
   stats: DashboardStats;
+  matchdayData?: MatchdayData;
   lastSyncedAt: string | null;
   movementAvailable: boolean;
   health: SheetHealth;
@@ -72,7 +73,16 @@ export type MatchPrediction = {
   goals2: number | null;
 };
 
+export type ActualMatchResult = {
+  team1: string;
+  team2: string;
+  goals1: number;
+  goals2: number;
+  winner: string;
+};
+
 export type MatchdayData = {
   matches: MatchdayMatch[];
   predictionsByMatch: Record<string, MatchPrediction[]>;
+  actualResults?: Record<string, ActualMatchResult>;
 };
