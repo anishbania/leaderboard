@@ -5,6 +5,13 @@ import { selectedWinnerOverrides } from "./winner-overrides";
 type CsvRecord = Record<string, string | undefined>;
 
 const invalidCellValues = new Set(["", "#N/A", "#VALUE!", "#REF!", "#DIV/0!", "N/A"]);
+const topPrizeSlotCount = 5;
+const lastPlacePrize = 1000;
+
+type PrizeSlot = {
+  prize: number;
+  prizePercent: number | null;
+};
 
 function canonicalKey(value: string) {
   return value.toLowerCase().replace(/%/g, "percent").replace(/[^a-z0-9]/g, "");
@@ -71,6 +78,73 @@ function makeParticipantId(name: string, index: number) {
   return `${name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "participant"}-${index + 1}`;
 }
 
+function getLivePrizeSlots(rows: string[][]) {
+  const prizeSlots = new Map<number, PrizeSlot>();
+
+  for (const row of rows.slice(1)) {
+    const prizeRank = parseNumber(row[5] ?? "");
+    const prize = parseNumber(row[6] ?? "");
+    const prizePercent = row[7]?.includes("%") ? parsePercent(row[7]) : null;
+
+    if (prizeRank == null || prize == null || prizeRank < 1 || prizeRank > topPrizeSlotCount) continue;
+
+    prizeSlots.set(prizeRank, {
+      prize,
+      prizePercent,
+    });
+  }
+
+  return prizeSlots;
+}
+
+function applyLivePrizeDistribution(entries: LeaderboardEntry[], prizeSlots: Map<number, PrizeSlot>) {
+  const sorted = entries.sort((a, b) => b.score - a.score || a.rank - b.rank || a.name.localeCompare(b.name));
+
+  for (const entry of sorted) {
+    entry.prize = null;
+    entry.prizePercent = null;
+  }
+
+  let groupStart = 0;
+  let scorePosition = 1;
+
+  while (groupStart < sorted.length) {
+    let groupEnd = groupStart + 1;
+
+    while (groupEnd < sorted.length && sorted[groupEnd].score === sorted[groupStart].score) {
+      groupEnd += 1;
+    }
+
+    const groupSize = groupEnd - groupStart;
+    let groupPrize = prizeSlots.get(scorePosition)?.prize ?? 0;
+    let groupPrizePercent = prizeSlots.get(scorePosition)?.prizePercent ?? null;
+
+    for (let index = groupStart; index < groupEnd; index += 1) {
+      sorted[index].rank = scorePosition;
+    }
+
+    const isLowestScoreGroup = groupEnd === sorted.length;
+    if (isLowestScoreGroup) {
+      groupPrize += lastPlacePrize;
+    }
+
+    if (groupPrize > 0) {
+      const individualPrize = groupPrize / groupSize;
+      const individualPrizePercent = groupPrizePercent == null ? null : groupPrizePercent / groupSize;
+
+      for (let index = groupStart; index < groupEnd; index += 1) {
+        sorted[index].prize = individualPrize;
+        sorted[index].prizePercent = individualPrizePercent;
+      }
+    }
+
+    groupStart = groupEnd;
+    scorePosition += 1;
+  }
+
+  return sorted;
+}
+
 export function parseRankingCsv(csv: string): LeaderboardEntry[] {
   const rawRows = parseCsvRows(csv);
   const firstCell = rawRows[0]?.[0]?.trim().toLowerCase();
@@ -112,6 +186,7 @@ export function parseRankingCsv(csv: string): LeaderboardEntry[] {
 }
 
 function parsePredictionsRankingLayout(rows: string[][]): LeaderboardEntry[] {
+  const prizeSlots = getLivePrizeSlots(rows);
   const entries = rows
     .slice(1)
     .map((row, index): LeaderboardEntry | null => {
@@ -121,11 +196,6 @@ function parsePredictionsRankingLayout(rows: string[][]): LeaderboardEntry[] {
 
       if (!name || rank == null || score == null) return null;
 
-      const prizeRank = parseNumber(row[5] ?? "");
-      const rawPrize = parseNumber(row[6] ?? "");
-      const prizePercent = row[7]?.includes("%") ? parsePercent(row[7]) : null;
-      const isTopFivePrize = prizeRank != null && prizeRank >= 1 && prizeRank <= 5;
-
       return {
         participantId: makeParticipantId(name, index),
         rank,
@@ -133,8 +203,8 @@ function parsePredictionsRankingLayout(rows: string[][]): LeaderboardEntry[] {
         score,
         exactPredictions: parseNumber(row[3] ?? "") ?? 0,
         correctTeams: parseNumber(row[4] ?? "") ?? 0,
-        prize: isTopFivePrize ? rawPrize : null,
-        prizePercent: isTopFivePrize ? prizePercent : null,
+        prize: null,
+        prizePercent: null,
         paid: null,
         received: null,
         predictionSubmitted: null,
@@ -147,18 +217,7 @@ function parsePredictionsRankingLayout(rows: string[][]): LeaderboardEntry[] {
     })
     .filter((entry): entry is LeaderboardEntry => Boolean(entry));
 
-  const sorted = entries.sort((a, b) => a.rank - b.rank);
-  const lastRank = sorted.at(-1)?.rank;
-
-  return sorted.map((entry) =>
-    entry.rank === lastRank
-      ? {
-          ...entry,
-          prize: 1000,
-          prizePercent: null,
-        }
-      : entry,
-  );
+  return applyLivePrizeDistribution(entries, prizeSlots);
 }
 
 export function parseParticipantsCsv(csv: string): ParticipantEntry[] {

@@ -46,6 +46,10 @@ type ViewMode = "table" | "cards";
 type AppTab = "leaderboard" | "predictions";
 type PredictionFilter = "all" | "team1" | "draw" | "team2";
 type Icon = ComponentType<SVGProps<SVGSVGElement>>;
+type RankMeta = {
+  scorePosition: number;
+  isLastScoreGroup: boolean;
+};
 
 const knockoutStartMatchNo = 73;
 const bracketSimulationCount = 3000;
@@ -198,6 +202,64 @@ function formatProbability(value: number | null | undefined) {
     minimumFractionDigits: value > 0 && value < 0.1 ? 1 : 0,
     maximumFractionDigits: 1,
   }).format(value);
+}
+
+function buildRankMeta(leaderboard: LeaderboardEntry[]) {
+  const sorted = [...leaderboard].sort((a, b) => b.score - a.score || a.rank - b.rank || a.name.localeCompare(b.name));
+  const metaByParticipant = new Map<string, RankMeta>();
+  let groupStart = 0;
+  let scorePosition = 1;
+
+  while (groupStart < sorted.length) {
+    let groupEnd = groupStart + 1;
+    while (groupEnd < sorted.length && sorted[groupEnd].score === sorted[groupStart].score) {
+      groupEnd += 1;
+    }
+
+    const isLastScoreGroup = groupEnd === sorted.length;
+    for (let index = groupStart; index < groupEnd; index += 1) {
+      metaByParticipant.set(sorted[index].participantId, { scorePosition, isLastScoreGroup });
+    }
+
+    groupStart = groupEnd;
+    scorePosition += 1;
+  }
+
+  return metaByParticipant;
+}
+
+function RankMarker({ meta }: { meta?: RankMeta }) {
+  if (!meta) return null;
+
+  const positionLabel = `Score position ${meta.scorePosition}`;
+  const topIcon =
+    meta.scorePosition === 1
+      ? { Icon: Crown, className: "text-amber-600", label: positionLabel }
+      : meta.scorePosition >= 2 && meta.scorePosition <= 5
+        ? { Icon: Medal, className: "text-amber-600", label: positionLabel }
+        : null;
+
+  const TopIcon = topIcon?.Icon;
+
+  return (
+    <>
+      {TopIcon && topIcon ? (
+        <TopIcon className={cn("h-3.5 w-3.5 opacity-70", topIcon.className)} aria-label={topIcon.label} />
+      ) : null}
+      {meta.isLastScoreGroup ? (
+        <CircleDollarSign className="h-3.5 w-3.5 text-rose-600 opacity-60" aria-label="Last score group" />
+      ) : null}
+    </>
+  );
+}
+
+function RankText({ entry, meta }: { entry: LeaderboardEntry; meta?: RankMeta }) {
+  return (
+    <span className="inline-flex min-w-0 items-center gap-1.5">
+      <span>#{entry.rank}</span>
+      <RankMarker meta={meta} />
+    </span>
+  );
 }
 
 function predictedWinner(prediction: MatchPrediction | undefined) {
@@ -1078,7 +1140,7 @@ function PredictionCenter({
   );
 }
 
-function PodiumCard({ entry }: { entry: LeaderboardEntry }) {
+function PodiumCard({ entry, rankMeta }: { entry: LeaderboardEntry; rankMeta?: RankMeta }) {
   const isChampion = entry.rank === 1;
   const medalClass =
     entry.rank === 1
@@ -1104,7 +1166,10 @@ function PodiumCard({ entry }: { entry: LeaderboardEntry }) {
             {isChampion ? <Crown className="h-6 w-6" /> : <Medal className="h-6 w-6" />}
           </div>
           <div className="min-w-0">
-            <p className="text-xs font-semibold uppercase text-slate-500">Rank {entry.rank}</p>
+            <p className="flex items-center gap-1.5 text-xs font-semibold uppercase text-slate-500">
+              Rank {entry.rank}
+              <RankMarker meta={rankMeta} />
+            </p>
             <h2 className="mt-1 break-words text-base font-semibold text-slate-950 sm:text-lg">{entry.name}</h2>
           </div>
         </div>
@@ -1128,14 +1193,14 @@ function PodiumCard({ entry }: { entry: LeaderboardEntry }) {
   );
 }
 
-function Podium({ leaders }: { leaders: LeaderboardEntry[] }) {
+function Podium({ leaders, rankMetaByParticipant }: { leaders: LeaderboardEntry[]; rankMetaByParticipant: Map<string, RankMeta> }) {
   const [first, second, third] = leaders.slice(0, 3);
   const ordered = [second, first, third].filter(Boolean);
 
   return (
     <section className="grid gap-3 lg:grid-cols-3">
       {ordered.map((entry) => (
-        <PodiumCard key={entry.participantId} entry={entry} />
+        <PodiumCard key={entry.participantId} entry={entry} rankMeta={rankMetaByParticipant.get(entry.participantId)} />
       ))}
     </section>
   );
@@ -1166,11 +1231,13 @@ function Movers({ title, entries, positive }: { title: string; entries: Leaderbo
 
 function PlayerCard({
   entry,
+  rankMeta,
   selected,
   winningProbability,
   onClick,
 }: {
   entry: LeaderboardEntry;
+  rankMeta?: RankMeta;
   selected: boolean;
   winningProbability: number | null;
   onClick: () => void;
@@ -1201,7 +1268,10 @@ function PlayerCard({
             {initials(entry.name)}
           </div>
           <div className="min-w-0">
-            <p className="break-words font-semibold text-slate-950">#{entry.rank} {entry.name}</p>
+            <p className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 break-words font-semibold text-slate-950">
+              <RankText entry={entry} meta={rankMeta} />
+              <span>{entry.name}</span>
+            </p>
             <div className="mt-1">
               <TeamPill team={entry.selectedWinner} />
             </div>
@@ -1227,7 +1297,7 @@ function PlayerCard({
   );
 }
 
-function DetailPanel({ entry, onClose }: { entry: LeaderboardEntry | null; onClose: () => void }) {
+function DetailPanel({ entry, rankMeta, onClose }: { entry: LeaderboardEntry | null; rankMeta?: RankMeta; onClose: () => void }) {
   return (
     <AnimatePresence>
       {entry ? (
@@ -1240,7 +1310,10 @@ function DetailPanel({ entry, onClose }: { entry: LeaderboardEntry | null; onClo
           <div className="flex items-start justify-between gap-3">
             <div>
               <p className="text-xs font-semibold uppercase text-slate-500">Selected player</p>
-              <h3 className="mt-1 break-words text-base font-semibold text-slate-950 sm:text-lg">#{entry.rank} {entry.name}</h3>
+              <h3 className="mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 break-words text-base font-semibold text-slate-950 sm:text-lg">
+                <RankText entry={entry} meta={rankMeta} />
+                <span>{entry.name}</span>
+              </h3>
             </div>
             <button
               type="button"
@@ -1295,6 +1368,7 @@ export function LeaderboardDashboard({ initialData }: Props) {
     () => new Map(bracketOutlook.standings.map((entry) => [entry.name, entry.winChance])),
     [bracketOutlook],
   );
+  const rankMetaByParticipant = useMemo(() => buildRankMeta(initialData.leaderboard), [initialData.leaderboard]);
 
   const selectedEntry = useMemo(
     () => initialData.leaderboard.find((entry) => entry.participantId === selectedId) ?? null,
@@ -1448,7 +1522,7 @@ export function LeaderboardDashboard({ initialData }: Props) {
           />
         ) : (
           <>
-          <Podium leaders={initialData.leaderboard} />
+          <Podium leaders={initialData.leaderboard} rankMetaByParticipant={rankMetaByParticipant} />
 
           <section className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_390px]">
           <div className="space-y-4">
@@ -1553,7 +1627,8 @@ export function LeaderboardDashboard({ initialData }: Props) {
                   <table className="w-full table-fixed border-collapse text-[13px]">
                     <thead>
                       <tr className="border-b border-slate-200 bg-slate-50 text-left text-[11px] uppercase text-slate-500">
-                        <th className="w-[64px] py-3 pl-4 pr-2 font-semibold">Rank</th>
+                        <th className="w-[52px] py-3 pl-4 pr-2 font-semibold">S.N</th>
+                        <th className="w-[64px] px-2 py-3 font-semibold">Rank</th>
                         <th className="w-[25%] px-2 py-3 font-semibold">Player</th>
                         <th className="w-[70px] px-2 py-3 text-right font-semibold">Move</th>
                         <th className="w-[72px] px-2 py-3 text-right font-semibold">Score</th>
@@ -1565,7 +1640,7 @@ export function LeaderboardDashboard({ initialData }: Props) {
                     </thead>
                     <tbody>
                       <AnimatePresence initial={false}>
-                        {filteredLeaderboard.map((entry) => (
+                        {filteredLeaderboard.map((entry, index) => (
                           <motion.tr
                             layout
                             key={entry.participantId}
@@ -1576,7 +1651,10 @@ export function LeaderboardDashboard({ initialData }: Props) {
                               (entry.prize ?? 0) > 0 && selectedId !== entry.participantId && "bg-amber-50/50",
                             )}
                           >
-                            <td className="py-3 pl-4 pr-2 font-semibold text-slate-950">#{entry.rank}</td>
+                            <td className="py-3 pl-4 pr-2 font-medium text-slate-500">{index + 1}</td>
+                            <td className="px-2 py-3 font-semibold text-slate-950">
+                              <RankText entry={entry} meta={rankMetaByParticipant.get(entry.participantId)} />
+                            </td>
                             <td className="px-2 py-3">
                               <div className="flex items-center gap-3">
                                 <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-slate-900 text-[11px] font-semibold text-white">
@@ -1616,6 +1694,7 @@ export function LeaderboardDashboard({ initialData }: Props) {
                     <PlayerCard
                       key={entry.participantId}
                       entry={entry}
+                      rankMeta={rankMetaByParticipant.get(entry.participantId)}
                       selected={selectedId === entry.participantId}
                       winningProbability={winningProbabilityByName.get(entry.name) ?? null}
                       onClick={() => setSelectedId(entry.participantId)}
@@ -1631,6 +1710,7 @@ export function LeaderboardDashboard({ initialData }: Props) {
                     <PlayerCard
                       key={entry.participantId}
                       entry={entry}
+                      rankMeta={rankMetaByParticipant.get(entry.participantId)}
                       selected={selectedId === entry.participantId}
                       winningProbability={winningProbabilityByName.get(entry.name) ?? null}
                       onClick={() => setSelectedId(entry.participantId)}
@@ -1642,7 +1722,11 @@ export function LeaderboardDashboard({ initialData }: Props) {
           </div>
 
           <aside className="flex flex-col gap-4">
-            <DetailPanel entry={selectedEntry} onClose={() => setSelectedId(null)} />
+            <DetailPanel
+              entry={selectedEntry}
+              rankMeta={selectedEntry ? rankMetaByParticipant.get(selectedEntry.participantId) : undefined}
+              onClose={() => setSelectedId(null)}
+            />
 
             <div className="rounded-xl border border-slate-200/80 bg-white p-4 shadow-[0_8px_30px_rgba(15,23,42,0.05)]">
               <div className="flex items-center justify-between gap-3">
