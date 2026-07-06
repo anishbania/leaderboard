@@ -8,13 +8,16 @@ import {
   CheckCircle2,
   CircleDollarSign,
   Crown,
+  Lock,
   LayoutGrid,
   List,
   Medal,
   RotateCcw,
   Search,
+  ShieldCheck,
   Target,
   Trophy,
+  TrendingUp,
   Users,
   WalletCards,
   X,
@@ -78,6 +81,8 @@ const simulationOrder = [
   89, 90, 91, 92, 93, 94, 95, 96,
   97, 98, 99, 100, 101, 102, 103, 104,
 ];
+const quarterFinalFeederMatches = [89, 90, 91, 92, 93, 94, 95, 96];
+const quarterFinalMatches = [97, 98, 99, 100];
 
 const teamPalette = [
   "#0f766e",
@@ -204,6 +209,11 @@ function formatProbability(value: number | null | undefined) {
   }).format(value);
 }
 
+function formatRankEstimate(value: number | null | undefined) {
+  if (value == null || Number.isNaN(value)) return "-";
+  return `#${new Intl.NumberFormat("en-US", { maximumFractionDigits: 1 }).format(value)}`;
+}
+
 function buildRankMeta(leaderboard: LeaderboardEntry[]) {
   const sorted = [...leaderboard].sort((a, b) => b.score - a.score || a.rank - b.rank || a.name.localeCompare(b.name));
   const metaByParticipant = new Map<string, RankMeta>();
@@ -285,6 +295,24 @@ function seededRandom(seed: number) {
   };
 }
 
+function buildTeamStrength(matchdayData: MatchdayData) {
+  const teamStrength = new Map<string, number>();
+
+  for (const matchNo of bracketSlots) {
+    const weight = roundWeight(matchNo);
+    for (const prediction of matchdayData.predictionsByMatch[String(matchNo)] ?? []) {
+      teamStrength.set(prediction.team1, (teamStrength.get(prediction.team1) ?? 1) + 0.1);
+      teamStrength.set(prediction.team2, (teamStrength.get(prediction.team2) ?? 1) + 0.1);
+      const winner = predictedWinner(prediction);
+      if (winner) {
+        teamStrength.set(winner, (teamStrength.get(winner) ?? 1) + weight);
+      }
+    }
+  }
+
+  return teamStrength;
+}
+
 function buildPredictionIndex(matchdayData: MatchdayData) {
   const byName = new Map<string, Map<number, MatchPrediction>>();
   for (const matchNo of bracketSlots) {
@@ -344,24 +372,283 @@ function validatePersonBracket(predictions: Map<number, MatchPrediction>) {
   return issues;
 }
 
+function predictionWinnerCounts(matchdayData: MatchdayData, matchNo: number) {
+  const counts = new Map<string, number>();
+  for (const prediction of matchdayData.predictionsByMatch[String(matchNo)] ?? []) {
+    const winner = predictedWinner(prediction);
+    if (winner) counts.set(winner, (counts.get(winner) ?? 0) + 1);
+  }
+  return counts;
+}
+
+function sortTeamsByConsensus(teams: Iterable<string>, counts: Map<string, number>) {
+  return Array.from(new Set(Array.from(teams).filter(Boolean))).sort(
+    (a, b) => (counts.get(b) ?? 0) - (counts.get(a) ?? 0) || a.localeCompare(b),
+  );
+}
+
+function baseMatchTeams(matchdayData: MatchdayData, matchNo: number) {
+  const result = matchdayData.actualResults?.[String(matchNo)];
+  if (result) return [result.winner];
+
+  const match = matchdayData.matches.find((item) => item.matchNo === matchNo);
+  return [match?.team1, match?.team2].filter((team): team is string => Boolean(team));
+}
+
+function possibleProgressionTeams(matchdayData: MatchdayData, matchNo: number): string[] {
+  const result = matchdayData.actualResults?.[String(matchNo)];
+  if (result) return [result.winner];
+
+  if (matchNo >= 73 && matchNo <= 88) {
+    return baseMatchTeams(matchdayData, matchNo);
+  }
+
+  const children = bracketChildren[matchNo];
+  if (!children) {
+    return baseMatchTeams(matchdayData, matchNo);
+  }
+
+  return Array.from(
+    new Set(children.flatMap((childMatchNo) => possibleProgressionTeams(matchdayData, childMatchNo))),
+  );
+}
+
+function directCompetitorTeams(matchdayData: MatchdayData, matchNo: number) {
+  const result = matchdayData.actualResults?.[String(matchNo)];
+  if (result) return [result.team1, result.team2];
+
+  const match = matchdayData.matches.find((item) => item.matchNo === matchNo);
+  const sheetTeams = [match?.team1, match?.team2].filter((team): team is string => Boolean(team));
+  if (sheetTeams.length === 2 && !sheetTeams.some((team) => /^winner\b/i.test(team))) {
+    return sheetTeams;
+  }
+
+  const children = bracketChildren[matchNo];
+  if (!children) return sheetTeams;
+
+  return Array.from(
+    new Set(children.flatMap((childMatchNo) => possibleProgressionTeams(matchdayData, childMatchNo))),
+  );
+}
+
+function findUpstreamMatchForTeam(matchdayData: MatchdayData, matchNo: number, team: string): number | null {
+  if (baseMatchTeams(matchdayData, matchNo).includes(team)) return matchNo;
+
+  const children = bracketChildren[matchNo];
+  if (!children) return null;
+
+  for (const childMatchNo of children) {
+    const found = findUpstreamMatchForTeam(matchdayData, childMatchNo, team);
+    if (found != null) return found;
+  }
+
+  return null;
+}
+
+function buildQuarterFinalOptions(matchdayData: MatchdayData) {
+  return quarterFinalFeederMatches.map((matchNo) => {
+    const lockedResult = matchdayData.actualResults?.[String(matchNo)];
+    const counts = predictionWinnerCounts(matchdayData, matchNo);
+    const competitors = directCompetitorTeams(matchdayData, matchNo);
+    const candidates = sortTeamsByConsensus(
+      lockedResult ? [lockedResult.winner] : competitors,
+      counts,
+    );
+
+    return {
+      matchNo,
+      quarterFinalMatchNo: quarterFinalMatches.find((quarterMatchNo) =>
+        bracketChildren[quarterMatchNo]?.includes(matchNo),
+      ) ?? null,
+      locked: Boolean(lockedResult),
+      selectedTeam: lockedResult?.winner ?? candidates[0] ?? "",
+      candidates,
+      topCount: counts.get(lockedResult?.winner ?? candidates[0] ?? "") ?? 0,
+      pickCount: (matchdayData.predictionsByMatch[String(matchNo)] ?? []).length,
+    };
+  });
+}
+
+type QuarterFinalScenario = ReturnType<typeof buildQuarterFinalOptions>;
+
+function scoreScenarioBracket(
+  name: string,
+  currentScore: number,
+  predictions: Map<number, MatchPrediction> | undefined,
+  actualTeams: Map<number, [string, string]>,
+  actualWinners: Map<number, string>,
+) {
+  let score = currentScore;
+
+  for (const matchNo of bracketSlots) {
+    const prediction = predictions?.get(matchNo);
+    const actualMatchTeams = actualTeams.get(matchNo);
+    const actualWinner = actualWinners.get(matchNo);
+    if (!prediction || !actualMatchTeams || !actualWinner) continue;
+
+    const weight = roundWeight(matchNo);
+    if ([prediction.team1, prediction.team2].includes(actualMatchTeams[0])) score += weight * 0.25;
+    if ([prediction.team1, prediction.team2].includes(actualMatchTeams[1])) score += weight * 0.25;
+    if (predictedWinner(prediction) === actualWinner) score += weight;
+  }
+
+  return { name, score };
+}
+
+function applyProjectedRanks(scores: Array<{ name: string; score: number }>) {
+  const sorted = [...scores].sort((a, b) => b.score - a.score || a.name.localeCompare(b.name));
+  const rankByName = new Map<string, number>();
+  let rank = 1;
+
+  sorted.forEach((item, index) => {
+    if (index > 0 && item.score < sorted[index - 1].score) rank = index + 1;
+    rankByName.set(item.name, rank);
+  });
+
+  return rankByName;
+}
+
+function buildQuarterFinalProjection(
+  leaderboard: LeaderboardEntry[],
+  matchdayData: MatchdayData,
+  scenario: QuarterFinalScenario,
+) {
+  const predictionIndex = buildPredictionIndex(matchdayData);
+  const entryByName = new Map(leaderboard.map((entry) => [entry.name, entry]));
+  const names = Array.from(new Set([...leaderboard.map((entry) => entry.name), ...predictionIndex.keys()]));
+  const matchByNo = new Map(matchdayData.matches.map((match) => [match.matchNo, match]));
+  const teamStrength = buildTeamStrength(matchdayData);
+  const forcedWinners = new Map<number, string>();
+  for (const slot of scenario) {
+    if (!slot.selectedTeam) continue;
+    forcedWinners.set(slot.matchNo, slot.selectedTeam);
+
+    const upstreamMatchNo = findUpstreamMatchForTeam(matchdayData, slot.matchNo, slot.selectedTeam);
+    if (upstreamMatchNo != null && upstreamMatchNo !== slot.matchNo) {
+      forcedWinners.set(upstreamMatchNo, slot.selectedTeam);
+    }
+  }
+  const validations = new Map(
+    names.map((name) => {
+      const issues = validatePersonBracket(predictionIndex.get(name) ?? new Map<number, MatchPrediction>());
+      return [name, issues];
+    }),
+  );
+  const resultByName = new Map(
+    names.map((name) => {
+      const entry = entryByName.get(name);
+      return [
+        name,
+        {
+          name,
+          currentRank: entry?.rank ?? null,
+          currentScore: entry?.score ?? 0,
+          projectedRankTotal: 0,
+          projectedScoreTotal: 0,
+          bestRank: Number.POSITIVE_INFINITY,
+          worstRank: 0,
+          topCount: 0,
+          champion: predictedWinner(predictionIndex.get(name)?.get(104)) ?? "No winner",
+          validBracket: (validations.get(name) ?? []).length === 0,
+        },
+      ];
+    }),
+  );
+
+  const random = seededRandom(bracketSeed + 97);
+  for (let simulation = 0; simulation < bracketSimulationCount; simulation++) {
+    const actualTeams = new Map<number, [string, string]>();
+    const actualWinners = new Map<number, string>();
+    const actualLosers = new Map<number, string>();
+
+    for (const matchNo of simulationOrder) {
+      const children = bracketChildren[matchNo];
+      const lockedResult = matchdayData.actualResults?.[String(matchNo)];
+      const forcedWinner = forcedWinners.get(matchNo);
+      let teams: [string, string] | null = null;
+
+      if (lockedResult) {
+        teams = [lockedResult.team1, lockedResult.team2];
+      } else if (matchNo >= 73 && matchNo <= 88) {
+        const match = matchByNo.get(matchNo);
+        if (match) teams = [match.team1, match.team2];
+      } else if (matchNo === 103) {
+        const firstLoser = actualLosers.get(101);
+        const secondLoser = actualLosers.get(102);
+        if (firstLoser && secondLoser) teams = [firstLoser, secondLoser];
+      } else if (children) {
+        const firstWinner = actualWinners.get(children[0]);
+        const secondWinner = actualWinners.get(children[1]);
+        if (firstWinner && secondWinner) teams = [firstWinner, secondWinner];
+      }
+
+      const match = matchByNo.get(matchNo);
+      if (!teams && match) teams = [match.team1, match.team2];
+      if (!teams) continue;
+
+      let winner: string;
+      if (lockedResult) {
+        winner = lockedResult.winner;
+      } else if (forcedWinner && teams.includes(forcedWinner)) {
+        winner = forcedWinner;
+      } else if (forcedWinner) {
+        winner = forcedWinner;
+        teams = [forcedWinner, teams.find((team) => team !== forcedWinner) ?? teams[0]];
+      } else {
+        const firstStrength = teamStrength.get(teams[0]) ?? 1;
+        const secondStrength = teamStrength.get(teams[1]) ?? 1;
+        const firstWinChance = firstStrength / (firstStrength + secondStrength);
+        winner = random() <= firstWinChance ? teams[0] : teams[1];
+      }
+
+      const loser = winner === teams[0] ? teams[1] : teams[0];
+      actualTeams.set(matchNo, teams);
+      actualWinners.set(matchNo, winner);
+      actualLosers.set(matchNo, loser);
+    }
+
+    const scores = names.map((name) =>
+      scoreScenarioBracket(
+        name,
+        entryByName.get(name)?.score ?? 0,
+        predictionIndex.get(name),
+        actualTeams,
+        actualWinners,
+      ),
+    );
+    const rankByName = applyProjectedRanks(scores);
+    const topRank = Math.min(...rankByName.values());
+
+    for (const score of scores) {
+      const result = resultByName.get(score.name);
+      const rank = rankByName.get(score.name) ?? names.length;
+      if (!result) continue;
+      result.projectedScoreTotal += score.score;
+      result.projectedRankTotal += rank;
+      result.bestRank = Math.min(result.bestRank, rank);
+      result.worstRank = Math.max(result.worstRank, rank);
+      if (rank === topRank) result.topCount += 1;
+    }
+  }
+
+  return Array.from(resultByName.values())
+    .map((item) => ({
+      ...item,
+      projectedScore: item.projectedScoreTotal / bracketSimulationCount,
+      projectedRank: item.projectedRankTotal / bracketSimulationCount,
+      titleChance: item.topCount / bracketSimulationCount,
+      bestRank: Number.isFinite(item.bestRank) ? item.bestRank : null,
+      worstRank: item.worstRank || null,
+    }))
+    .sort((a, b) => a.projectedRank - b.projectedRank || b.projectedScore - a.projectedScore || a.name.localeCompare(b.name));
+}
+
 function buildBracketOutlook(leaderboard: LeaderboardEntry[], matchdayData: MatchdayData) {
   const predictionIndex = buildPredictionIndex(matchdayData);
   const entryByName = new Map(leaderboard.map((entry) => [entry.name, entry]));
   const names = Array.from(new Set([...leaderboard.map((entry) => entry.name), ...predictionIndex.keys()]));
   const matchByNo = new Map(matchdayData.matches.map((match) => [match.matchNo, match]));
-  const teamStrength = new Map<string, number>();
-
-  for (const matchNo of bracketSlots) {
-    const weight = roundWeight(matchNo);
-    for (const prediction of matchdayData.predictionsByMatch[String(matchNo)] ?? []) {
-      teamStrength.set(prediction.team1, (teamStrength.get(prediction.team1) ?? 1) + 0.1);
-      teamStrength.set(prediction.team2, (teamStrength.get(prediction.team2) ?? 1) + 0.1);
-      const winner = predictedWinner(prediction);
-      if (winner) {
-        teamStrength.set(winner, (teamStrength.get(winner) ?? 1) + weight);
-      }
-    }
-  }
+  const teamStrength = buildTeamStrength(matchdayData);
 
   const validations = new Map(
     names.map((name) => {
@@ -489,12 +776,26 @@ function formatMatchDate(value: string) {
     month: "short",
     day: "numeric",
     weekday: "short",
-  }).format(new Date(`${value}T00:00:00`));
+    timeZone: "UTC",
+  }).format(new Date(`${value}T00:00:00Z`));
 }
 
-function pickInitialDate(dates: string[]) {
-  const today = new Date().toISOString().slice(0, 10);
-  return dates.find((date) => date >= today) ?? dates.at(-1) ?? dates[0] ?? today;
+function formatSyncedAt(value: string | null) {
+  if (!value) return "Live sheet";
+
+  return new Intl.DateTimeFormat("en-US", {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    timeZone: "UTC",
+    timeZoneName: "short",
+  }).format(new Date(value));
+}
+
+function pickInitialDate(dates: string[], asOfDate: string) {
+  return dates.find((date) => date >= asOfDate) ?? dates.at(-1) ?? dates[0] ?? asOfDate;
 }
 
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
@@ -507,7 +808,7 @@ function MatchdayPredictions({
 }) {
   const matchdays = fallbackMatchdays;
   const dates = useMemo(() => Array.from(new Set(matchdays.matches.map((match) => match.date))).sort(), [matchdays.matches]);
-  const [selectedDate, setSelectedDate] = useState(() => pickInitialDate(dates));
+  const [selectedDate, setSelectedDate] = useState(() => pickInitialDate(dates, "2026-07-06"));
   const dayMatches = useMemo(
     () => matchdays.matches.filter((match) => match.date === selectedDate),
     [matchdays.matches, selectedDate],
@@ -716,11 +1017,13 @@ function PredictionCenter({
   leaderboard,
   matchdayData,
   bracketOutlook,
+  asOfDate,
   onSelectPlayer,
 }: {
   leaderboard: LeaderboardEntry[];
   matchdayData: MatchdayData;
   bracketOutlook: BracketOutlook;
+  asOfDate: string;
   onSelectPlayer: (participantId: string) => void;
 }) {
   const bracketMatches = useMemo(
@@ -728,7 +1031,7 @@ function PredictionCenter({
     [matchdayData],
   );
   const dates = useMemo(() => Array.from(new Set(bracketMatches.map((match) => match.date))).sort(), [bracketMatches]);
-  const [selectedDate, setSelectedDate] = useState(() => pickInitialDate(dates));
+  const [selectedDate, setSelectedDate] = useState(() => pickInitialDate(dates, asOfDate));
   const [predictionQuery, setPredictionQuery] = useState("");
   const [predictionFilter, setPredictionFilter] = useState<PredictionFilter>("all");
   const dayMatches = useMemo(() => bracketMatches.filter((match) => match.date === selectedDate), [bracketMatches, selectedDate]);
@@ -737,6 +1040,33 @@ function PredictionCenter({
   const playerByName = useMemo(() => new Map(leaderboard.map((entry) => [entry.name, entry])), [leaderboard]);
   const topOutlook = bracketOutlook.standings[0];
   const shownOutlook = useMemo(() => bracketOutlook.standings.slice(0, 8), [bracketOutlook]);
+  const quarterFinalOptions = useMemo(() => buildQuarterFinalOptions(matchdayData), [matchdayData]);
+  const [quarterFinalSelections, setQuarterFinalSelections] = useState<Record<number, string>>({});
+  const quarterFinalScenario = useMemo(
+    () =>
+      quarterFinalOptions.map((slot) => ({
+        ...slot,
+        selectedTeam: quarterFinalSelections[slot.matchNo] ?? slot.selectedTeam,
+      })),
+    [quarterFinalOptions, quarterFinalSelections],
+  );
+  const quarterFinalProjection = useMemo(
+    () => buildQuarterFinalProjection(leaderboard, matchdayData, quarterFinalScenario),
+    [leaderboard, matchdayData, quarterFinalScenario],
+  );
+  const quarterFinalProjectionLeader = quarterFinalProjection[0];
+  const selectedQuarterFinalTeams = useMemo(
+    () => quarterFinalScenario.map((slot) => slot.selectedTeam).filter(Boolean),
+    [quarterFinalScenario],
+  );
+  const quarterFinalPairs = useMemo(
+    () =>
+      quarterFinalMatches.map((matchNo) => ({
+        matchNo,
+        feeders: bracketChildren[matchNo]?.map((feederNo) => quarterFinalScenario.find((slot) => slot.matchNo === feederNo)) ?? [],
+      })),
+    [quarterFinalScenario],
+  );
 
   const predictions = useMemo(() => {
     if (!selectedMatch) return [];
@@ -810,6 +1140,10 @@ function PredictionCenter({
     setSelectedMatchNo(firstMatch?.matchNo ?? null);
     setPredictionFilter("all");
     setPredictionQuery("");
+  }
+
+  function resetQuarterFinalScenario() {
+    setQuarterFinalSelections({});
   }
 
   return (
@@ -925,6 +1259,246 @@ function PredictionCenter({
                 Every imported bracket follows the official slot path.
               </div>
             ) : null}
+          </div>
+        </div>
+      </div>
+
+      <div className="overflow-hidden rounded-2xl border border-slate-800 bg-slate-950 shadow-[0_18px_50px_rgba(15,23,42,0.18)]">
+        <div className="grid gap-px bg-slate-800 xl:grid-cols-[430px_minmax(0,1fr)]">
+          <div className="bg-[linear-gradient(135deg,#0f172a_0%,#134e4a_58%,#1e293b_100%)] p-4 text-white sm:p-5">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <p className="inline-flex items-center gap-1.5 rounded-md border border-white/15 bg-white/10 px-2 py-1 text-[11px] font-semibold uppercase text-teal-100">
+                  <ShieldCheck className="h-3.5 w-3.5" />
+                  Quarter-final scenario
+                </p>
+                <h3 className="mt-3 text-xl font-semibold tracking-tight sm:text-2xl">Countries reached as of today</h3>
+                <p className="mt-2 max-w-xl text-sm text-slate-300">
+                  Select the eight Round of 16 winners. Locked rows come from the live FIFA result path, while open rows stay limited to legal teams from that feeder slot.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={resetQuarterFinalScenario}
+                className="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-md border border-white/15 bg-white/10 px-2.5 text-xs font-semibold text-white transition hover:bg-white/15"
+              >
+                <RotateCcw className="h-3.5 w-3.5" />
+                Reset
+              </button>
+            </div>
+
+            <div className="mt-4 grid grid-cols-2 gap-2 text-xs min-[420px]:grid-cols-4">
+              <div className="rounded-lg border border-white/10 bg-white/10 p-2">
+                <p className="text-slate-300">Selected</p>
+                <p className="mt-1 text-lg font-semibold">{selectedQuarterFinalTeams.length}/8</p>
+              </div>
+              <div className="rounded-lg border border-white/10 bg-white/10 p-2">
+                <p className="text-slate-300">Official</p>
+                <p className="mt-1 text-lg font-semibold">{quarterFinalScenario.filter((slot) => slot.locked).length}</p>
+              </div>
+              <div className="rounded-lg border border-white/10 bg-white/10 p-2">
+                <p className="text-slate-300">Projected #1</p>
+                <p className="mt-1 truncate text-lg font-semibold">{quarterFinalProjectionLeader?.name ?? "-"}</p>
+              </div>
+              <div className="rounded-lg border border-white/10 bg-white/10 p-2">
+                <p className="text-slate-300">Runs</p>
+                <p className="mt-1 text-lg font-semibold">{compactNumber(bracketSimulationCount)}</p>
+              </div>
+            </div>
+
+            <div className="mt-4 grid gap-2">
+              {quarterFinalPairs.map((pair) => (
+                <div key={pair.matchNo} className="rounded-xl border border-white/10 bg-white/[0.06] p-3">
+                  <div className="mb-2 flex items-center justify-between gap-2 text-xs">
+                    <span className="font-semibold uppercase text-teal-100">Quarter-final {pair.matchNo}</span>
+                    <span className="text-slate-400">Official bracket path</span>
+                  </div>
+                  <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2">
+                    {pair.feeders.map((slot, feederIndex) => (
+                      <div key={slot?.matchNo ?? feederIndex} className="min-w-0">
+                        <p className="truncate text-[11px] text-slate-400">R16 {slot?.matchNo ?? "-"}</p>
+                        <p className="truncate text-sm font-semibold text-white">{slot?.selectedTeam || "Pending"}</p>
+                      </div>
+                    ))}
+                    <span className="row-start-1 col-start-2 rounded bg-white/10 px-2 py-1 text-[11px] font-semibold text-slate-300">
+                      vs
+                    </span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="bg-white p-3 sm:p-4">
+            <div className="grid gap-3 2xl:grid-cols-[360px_minmax(0,1fr)]">
+              <div className="grid gap-2 sm:grid-cols-2 2xl:grid-cols-1">
+                {quarterFinalScenario.map((slot) => (
+                  <div
+                    key={slot.matchNo}
+                    className={cn(
+                      "rounded-xl border p-3 shadow-sm transition",
+                      slot.locked ? "border-emerald-200 bg-emerald-50/70" : "border-slate-200 bg-slate-50",
+                    )}
+                  >
+                    <div className="mb-2 flex items-center justify-between gap-2">
+                      <div className="min-w-0">
+                        <p className="truncate text-[11px] font-semibold uppercase text-slate-500">
+                          R16 match {slot.matchNo} to QF {slot.quarterFinalMatchNo ?? "-"}
+                        </p>
+                        <div className="mt-1">
+                          <TeamPill team={slot.selectedTeam || null} />
+                        </div>
+                      </div>
+                      <span
+                        className={cn(
+                          "inline-flex h-7 shrink-0 items-center gap-1 rounded-md px-2 text-[11px] font-semibold",
+                          slot.locked ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-700",
+                        )}
+                      >
+                        {slot.locked ? <Lock className="h-3 w-3" /> : <TrendingUp className="h-3 w-3" />}
+                        {slot.locked ? "Official" : "Estimate"}
+                      </span>
+                    </div>
+                    <select
+                      value={slot.selectedTeam}
+                      onChange={(event) =>
+                        setQuarterFinalSelections((current) => ({
+                          ...current,
+                          [slot.matchNo]: event.target.value,
+                        }))
+                      }
+                      disabled={slot.locked || slot.candidates.length === 0}
+                      className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-950 outline-none transition focus:border-teal-500 focus:ring-4 focus:ring-teal-500/10 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-500"
+                      aria-label={`Select country reaching the quarter-final from match ${slot.matchNo}`}
+                    >
+                      {slot.candidates.length === 0 ? <option value="">No teams available</option> : null}
+                      {slot.candidates.map((team) => (
+                        <option key={team} value={team}>
+                          {team}
+                        </option>
+                      ))}
+                    </select>
+                    <div className="mt-2 h-1.5 rounded-full bg-white">
+                      <div
+                        className={cn("h-1.5 rounded-full", slot.locked ? "bg-emerald-500" : "bg-amber-500")}
+                        style={{
+                          width: `${slot.locked ? 100 : Math.max(8, (slot.topCount / Math.max(slot.pickCount, 1)) * 100)}%`,
+                        }}
+                      />
+                    </div>
+                    <p className="mt-2 text-xs text-slate-500">
+                      {slot.locked ? "Authenticated by actual result" : `${slot.topCount}/${slot.pickCount} brackets backed this default`}
+                    </p>
+                  </div>
+                ))}
+              </div>
+
+              <div className="min-w-0 rounded-xl border border-slate-200 bg-white shadow-sm">
+                <div className="border-b border-slate-200 bg-slate-50 p-3 sm:p-4">
+                  <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                    <div>
+                      <p className="text-xs font-semibold uppercase text-slate-500">Estimated final ranking</p>
+                      <h3 className="mt-1 text-base font-semibold text-slate-950 sm:text-lg">
+                        {quarterFinalProjectionLeader
+                          ? `${quarterFinalProjectionLeader.name} projects ${formatRankEstimate(quarterFinalProjectionLeader.projectedRank)}`
+                          : "No projection available"}
+                      </h3>
+                      <p className="mt-1 max-w-2xl text-sm text-slate-500">
+                        Final points are scored against locked results, selected quarter-final teams, and simulated remaining fixtures.
+                      </p>
+                    </div>
+                    <div className="grid grid-cols-3 gap-2 text-center text-xs lg:min-w-[300px]">
+                      <div className="rounded-lg border border-slate-200 bg-white px-2 py-2">
+                        <p className="text-slate-500">Users</p>
+                        <p className="mt-1 font-semibold text-slate-950">{quarterFinalProjection.length}</p>
+                      </div>
+                      <div className="rounded-lg border border-slate-200 bg-white px-2 py-2">
+                        <p className="text-slate-500">Valid</p>
+                        <p className="mt-1 font-semibold text-slate-950">
+                          {quarterFinalProjection.filter((item) => item.validBracket).length}/{quarterFinalProjection.length}
+                        </p>
+                      </div>
+                      <div className="rounded-lg border border-slate-200 bg-white px-2 py-2">
+                        <p className="text-slate-500">Leader pts</p>
+                        <p className="mt-1 font-semibold text-slate-950">{compactNumber(quarterFinalProjectionLeader?.projectedScore)}</p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="max-h-[620px] overflow-auto">
+                  <table className="min-w-[780px] w-full text-left text-sm">
+                    <thead className="sticky top-0 z-10 bg-white text-xs uppercase text-slate-500 shadow-[0_1px_0_rgba(226,232,240,1)]">
+                      <tr>
+                        <th className="w-[96px] px-3 py-2 font-semibold">Projection</th>
+                        <th className="px-3 py-2 font-semibold">Person</th>
+                        <th className="px-3 py-2 text-right font-semibold">Final pts</th>
+                        <th className="px-3 py-2 text-right font-semibold">Current</th>
+                        <th className="px-3 py-2 text-right font-semibold">Range</th>
+                        <th className="px-3 py-2 text-right font-semibold">Title</th>
+                        <th className="px-3 py-2 text-right font-semibold">Status</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {quarterFinalProjection.map((item, index) => {
+                        const player = playerByName.get(item.name);
+                        const movement = item.currentRank == null ? null : item.currentRank - Math.round(item.projectedRank);
+
+                        return (
+                          <tr
+                            key={item.name}
+                            onClick={() => player && onSelectPlayer(player.participantId)}
+                            className={cn(
+                              "cursor-pointer border-t border-slate-100 transition hover:bg-teal-50/50",
+                              index < 3 && "bg-amber-50/40",
+                            )}
+                          >
+                            <td className="px-3 py-2">
+                              <div className="flex items-center gap-2">
+                                <span className={cn(
+                                  "flex h-7 w-7 items-center justify-center rounded-full text-xs font-semibold",
+                                  index === 0 ? "bg-amber-500 text-white" : index < 3 ? "bg-amber-100 text-amber-700" : "bg-slate-100 text-slate-600",
+                                )}>
+                                  {index + 1}
+                                </span>
+                                <MovementChip delta={movement} />
+                              </div>
+                            </td>
+                            <td className="px-3 py-2">
+                              <div className="flex min-w-0 items-center gap-2">
+                                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-slate-900 text-[10px] font-semibold text-white">
+                                  {initials(item.name)}
+                                </div>
+                                <div className="min-w-0">
+                                  <p className="truncate font-medium text-slate-950">{item.name}</p>
+                                  <p className="truncate text-[11px] text-slate-500">Current {item.currentRank ? `#${item.currentRank}` : "-"}</p>
+                                </div>
+                              </div>
+                            </td>
+                            <td className="px-3 py-2 text-right font-semibold text-teal-700">{compactNumber(item.projectedScore)}</td>
+                            <td className="px-3 py-2 text-right text-slate-700">{compactNumber(item.currentScore)}</td>
+                            <td className="px-3 py-2 text-right text-slate-700">
+                              {item.bestRank && item.worstRank ? `#${item.bestRank}-#${item.worstRank}` : "-"}
+                            </td>
+                            <td className="px-3 py-2 text-right font-semibold text-slate-700">{formatProbability(item.titleChance)}</td>
+                            <td className="px-3 py-2 text-right">
+                              <span
+                                className={cn(
+                                  "inline-flex rounded-md px-2 py-1 text-xs font-semibold",
+                                  item.validBracket ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700",
+                                )}
+                              >
+                                {item.validBracket ? "Valid" : "Flagged"}
+                              </span>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -1360,6 +1934,8 @@ export function LeaderboardDashboard({ initialData }: Props) {
   const stats = initialData.stats;
   const maxScore = initialData.leaderboard[0]?.score ?? 1;
   const currentMatchdayData = initialData.matchdayData ?? fallbackMatchdays;
+  const dashboardAsOfDate = (initialData.health.checkedAt || initialData.lastSyncedAt || "2026-07-06T00:00:00.000Z").slice(0, 10);
+  const syncedLabel = formatSyncedAt(initialData.lastSyncedAt);
   const bracketOutlook = useMemo(
     () => buildBracketOutlook(initialData.leaderboard, currentMatchdayData),
     [currentMatchdayData, initialData.leaderboard],
@@ -1452,7 +2028,7 @@ export function LeaderboardDashboard({ initialData }: Props) {
                 {initialData.health.ok ? "Sheet connected" : "Sheet unavailable"}
               </span>
               <span className="min-w-0 rounded-md border border-slate-200 bg-white px-2 py-1 font-medium text-slate-600">
-                Last synced: {initialData.lastSyncedAt ? new Date(initialData.lastSyncedAt).toLocaleString() : "Live sheet"}
+                Last synced: {syncedLabel}
               </span>
             </div>
           </div>
@@ -1515,6 +2091,7 @@ export function LeaderboardDashboard({ initialData }: Props) {
             leaderboard={initialData.leaderboard}
             matchdayData={currentMatchdayData}
             bracketOutlook={bracketOutlook}
+            asOfDate={dashboardAsOfDate}
             onSelectPlayer={(participantId) => {
               setSelectedId(participantId);
               setActiveTab("leaderboard");

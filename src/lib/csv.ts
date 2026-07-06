@@ -117,7 +117,7 @@ function applyLivePrizeDistribution(entries: LeaderboardEntry[], prizeSlots: Map
 
     const groupSize = groupEnd - groupStart;
     let groupPrize = prizeSlots.get(scorePosition)?.prize ?? 0;
-    let groupPrizePercent = prizeSlots.get(scorePosition)?.prizePercent ?? null;
+    const groupPrizePercent = prizeSlots.get(scorePosition)?.prizePercent ?? null;
 
     for (let index = groupStart; index < groupEnd; index += 1) {
       sorted[index].rank = scorePosition;
