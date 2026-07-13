@@ -38,6 +38,7 @@ import type { ComponentType, KeyboardEvent, SVGProps } from "react";
 import type { LeaderboardEntry, LeaderboardPayload, MatchdayData, MatchPrediction } from "@/lib/types";
 import { matchdayData as fallbackMatchdayData } from "@/lib/matchday-data";
 import { calculateFinishPositionShares, trackedFinishPositionCount } from "@/lib/finish-probabilities";
+import { getCurrentReachedBracketStage, type ReachedBracketStage } from "@/lib/bracket-stage";
 import { cn, compactNumber, formatCurrency } from "@/lib/utils";
 
 type Props = {
@@ -82,9 +83,6 @@ const simulationOrder = [
   89, 90, 91, 92, 93, 94, 95, 96,
   97, 98, 99, 100, 101, 102, 103, 104,
 ];
-const quarterFinalFeederMatches = [89, 90, 91, 92, 93, 94, 95, 96];
-const quarterFinalMatches = [97, 98, 99, 100];
-
 const teamPalette = [
   "#0f766e",
   "#b45309",
@@ -475,8 +473,8 @@ function findUpstreamMatchForTeam(matchdayData: MatchdayData, matchNo: number, t
   return null;
 }
 
-function buildQuarterFinalOptions(matchdayData: MatchdayData) {
-  return quarterFinalFeederMatches.map((matchNo) => {
+function buildProgressionOptions(matchdayData: MatchdayData, stage: ReachedBracketStage) {
+  return stage.feederMatchNos.map((matchNo) => {
     const lockedResult = matchdayData.actualResults?.[String(matchNo)];
     const counts = predictionWinnerCounts(matchdayData, matchNo);
     const competitors = directCompetitorTeams(matchdayData, matchNo);
@@ -487,8 +485,8 @@ function buildQuarterFinalOptions(matchdayData: MatchdayData) {
 
     return {
       matchNo,
-      quarterFinalMatchNo: quarterFinalMatches.find((quarterMatchNo) =>
-        bracketChildren[quarterMatchNo]?.includes(matchNo),
+      destinationMatchNo: stage.targetMatchNos.find((targetMatchNo) =>
+        bracketChildren[targetMatchNo]?.includes(matchNo),
       ) ?? null,
       locked: Boolean(lockedResult),
       selectedTeam: lockedResult?.winner ?? candidates[0] ?? "",
@@ -499,7 +497,7 @@ function buildQuarterFinalOptions(matchdayData: MatchdayData) {
   });
 }
 
-type QuarterFinalScenario = ReturnType<typeof buildQuarterFinalOptions>;
+type ProgressionScenario = ReturnType<typeof buildProgressionOptions>;
 
 function scoreScenarioBracket(
   name: string,
@@ -538,10 +536,10 @@ function applyProjectedRanks(scores: Array<{ name: string; score: number }>) {
   return rankByName;
 }
 
-function buildQuarterFinalProjection(
+function buildProgressionProjection(
   leaderboard: LeaderboardEntry[],
   matchdayData: MatchdayData,
-  scenario: QuarterFinalScenario,
+  scenario: ProgressionScenario,
 ) {
   const predictionIndex = buildPredictionIndex(matchdayData);
   const entryByName = new Map(leaderboard.map((entry) => [entry.name, entry]));
@@ -1073,32 +1071,38 @@ function PredictionCenter({
   const playerByName = useMemo(() => new Map(leaderboard.map((entry) => [entry.name, entry])), [leaderboard]);
   const topOutlook = bracketOutlook.standings[0];
   const shownOutlook = useMemo(() => bracketOutlook.standings.slice(0, 8), [bracketOutlook]);
-  const quarterFinalOptions = useMemo(() => buildQuarterFinalOptions(matchdayData), [matchdayData]);
-  const [quarterFinalSelections, setQuarterFinalSelections] = useState<Record<number, string>>({});
-  const quarterFinalScenario = useMemo(
+  const reachedStage = useMemo(() => getCurrentReachedBracketStage(matchdayData.actualResults), [matchdayData.actualResults]);
+  const progressionOptions = useMemo(() => buildProgressionOptions(matchdayData, reachedStage), [matchdayData, reachedStage]);
+  const [progressionSelections, setProgressionSelections] = useState<Record<number, string>>({});
+  const progressionScenario = useMemo(
     () =>
-      quarterFinalOptions.map((slot) => ({
+      progressionOptions.map((slot) => ({
         ...slot,
-        selectedTeam: quarterFinalSelections[slot.matchNo] ?? slot.selectedTeam,
+        selectedTeam: progressionSelections[slot.matchNo] ?? slot.selectedTeam,
       })),
-    [quarterFinalOptions, quarterFinalSelections],
+    [progressionOptions, progressionSelections],
   );
-  const quarterFinalProjection = useMemo(
-    () => buildQuarterFinalProjection(leaderboard, matchdayData, quarterFinalScenario),
-    [leaderboard, matchdayData, quarterFinalScenario],
+  const progressionProjection = useMemo(
+    () => buildProgressionProjection(leaderboard, matchdayData, progressionScenario),
+    [leaderboard, matchdayData, progressionScenario],
   );
-  const quarterFinalProjectionLeader = quarterFinalProjection[0];
-  const selectedQuarterFinalTeams = useMemo(
-    () => quarterFinalScenario.map((slot) => slot.selectedTeam).filter(Boolean),
-    [quarterFinalScenario],
+  const progressionProjectionLeader = progressionProjection[0];
+  const selectedProgressionTeams = useMemo(
+    () => progressionScenario.map((slot) => slot.selectedTeam).filter(Boolean),
+    [progressionScenario],
   );
-  const quarterFinalPairs = useMemo(
-    () =>
-      quarterFinalMatches.map((matchNo) => ({
+  const progressionPairs = useMemo(
+    () => {
+      if (reachedStage.targetMatchNos.length === 0) {
+        return [{ matchNo: null, feeders: progressionScenario }];
+      }
+
+      return reachedStage.targetMatchNos.map((matchNo) => ({
         matchNo,
-        feeders: bracketChildren[matchNo]?.map((feederNo) => quarterFinalScenario.find((slot) => slot.matchNo === feederNo)) ?? [],
-      })),
-    [quarterFinalScenario],
+        feeders: bracketChildren[matchNo]?.map((feederNo) => progressionScenario.find((slot) => slot.matchNo === feederNo)) ?? [],
+      }));
+    },
+    [progressionScenario, reachedStage],
   );
 
   const predictions = useMemo(() => {
@@ -1175,8 +1179,8 @@ function PredictionCenter({
     setPredictionQuery("");
   }
 
-  function resetQuarterFinalScenario() {
-    setQuarterFinalSelections({});
+  function resetProgressionScenario() {
+    setProgressionSelections({});
   }
 
   return (
@@ -1303,16 +1307,16 @@ function PredictionCenter({
               <div className="min-w-0">
                 <p className="inline-flex items-center gap-1.5 rounded-md border border-white/15 bg-white/10 px-2 py-1 text-[11px] font-semibold uppercase text-teal-100">
                   <ShieldCheck className="h-3.5 w-3.5" />
-                  Quarter-final scenario
+                  {reachedStage.badgeLabel}
                 </p>
                 <h3 className="mt-3 text-xl font-semibold tracking-tight sm:text-2xl">Countries reached as of today</h3>
                 <p className="mt-2 max-w-xl text-sm text-slate-300">
-                  Select the eight Round of 16 winners. Locked rows come from the live FIFA result path, while open rows stay limited to legal teams from that feeder slot.
+                  The live result path determines the current stage automatically. Official teams are locked, while unfinished feeder matches retain a bracket-based estimate.
                 </p>
               </div>
               <button
                 type="button"
-                onClick={resetQuarterFinalScenario}
+                onClick={resetProgressionScenario}
                 className="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-md border border-white/15 bg-white/10 px-2.5 text-xs font-semibold text-white transition hover:bg-white/15"
               >
                 <RotateCcw className="h-3.5 w-3.5" />
@@ -1323,15 +1327,15 @@ function PredictionCenter({
             <div className="mt-4 grid grid-cols-2 gap-2 text-xs min-[420px]:grid-cols-4">
               <div className="rounded-lg border border-white/10 bg-white/10 p-2">
                 <p className="text-slate-300">Selected</p>
-                <p className="mt-1 text-lg font-semibold">{selectedQuarterFinalTeams.length}/8</p>
+                <p className="mt-1 text-lg font-semibold">{selectedProgressionTeams.length}/{reachedStage.expectedCountryCount}</p>
               </div>
               <div className="rounded-lg border border-white/10 bg-white/10 p-2">
                 <p className="text-slate-300">Official</p>
-                <p className="mt-1 text-lg font-semibold">{quarterFinalScenario.filter((slot) => slot.locked).length}</p>
+                <p className="mt-1 text-lg font-semibold">{progressionScenario.filter((slot) => slot.locked).length}</p>
               </div>
               <div className="rounded-lg border border-white/10 bg-white/10 p-2">
                 <p className="text-slate-300">Projected #1</p>
-                <p className="mt-1 truncate text-lg font-semibold">{quarterFinalProjectionLeader?.name ?? "-"}</p>
+                <p className="mt-1 truncate text-lg font-semibold">{progressionProjectionLeader?.name ?? "-"}</p>
               </div>
               <div className="rounded-lg border border-white/10 bg-white/10 p-2">
                 <p className="text-slate-300">Runs</p>
@@ -1340,22 +1344,24 @@ function PredictionCenter({
             </div>
 
             <div className="mt-4 grid gap-2">
-              {quarterFinalPairs.map((pair) => (
-                <div key={pair.matchNo} className="rounded-xl border border-white/10 bg-white/[0.06] p-3">
+              {progressionPairs.map((pair) => (
+                <div key={pair.matchNo ?? reachedStage.key} className="rounded-xl border border-white/10 bg-white/[0.06] p-3">
                   <div className="mb-2 flex items-center justify-between gap-2 text-xs">
-                    <span className="font-semibold uppercase text-teal-100">Quarter-final {pair.matchNo}</span>
+                    <span className="font-semibold uppercase text-teal-100">
+                      {pair.matchNo ? `${reachedStage.destinationLabel} ${pair.matchNo}` : reachedStage.destinationLabel}
+                    </span>
                     <span className="text-slate-400">Official bracket path</span>
                   </div>
-                  <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2">
+                  <div className={cn("grid min-w-0 items-center gap-2", pair.feeders.length > 1 && "grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)]")}>
                     {pair.feeders.map((slot, feederIndex) => (
                       <div key={slot?.matchNo ?? feederIndex} className="min-w-0">
-                        <p className="truncate text-[11px] text-slate-400">R16 {slot?.matchNo ?? "-"}</p>
+                        <p className="truncate text-[11px] text-slate-400">{reachedStage.feederLabel} {slot?.matchNo ?? "-"}</p>
                         <p className="truncate text-sm font-semibold text-white">{slot?.selectedTeam || "Pending"}</p>
                       </div>
                     ))}
-                    <span className="row-start-1 col-start-2 rounded bg-white/10 px-2 py-1 text-[11px] font-semibold text-slate-300">
-                      vs
-                    </span>
+                    {pair.feeders.length > 1 ? (
+                      <span className="row-start-1 col-start-2 rounded bg-white/10 px-2 py-1 text-[11px] font-semibold text-slate-300">vs</span>
+                    ) : null}
                   </div>
                 </div>
               ))}
@@ -1365,7 +1371,7 @@ function PredictionCenter({
           <div className="bg-white p-3 sm:p-4">
             <div className="grid gap-3 2xl:grid-cols-[360px_minmax(0,1fr)]">
               <div className="grid gap-2 sm:grid-cols-2 2xl:grid-cols-1">
-                {quarterFinalScenario.map((slot) => (
+                {progressionScenario.map((slot) => (
                   <div
                     key={slot.matchNo}
                     className={cn(
@@ -1376,7 +1382,7 @@ function PredictionCenter({
                     <div className="mb-2 flex items-center justify-between gap-2">
                       <div className="min-w-0">
                         <p className="truncate text-[11px] font-semibold uppercase text-slate-500">
-                          R16 match {slot.matchNo} to QF {slot.quarterFinalMatchNo ?? "-"}
+                          {reachedStage.feederLabel} match {slot.matchNo} to {reachedStage.destinationLabel} {slot.destinationMatchNo ?? ""}
                         </p>
                         <div className="mt-1">
                           <TeamPill team={slot.selectedTeam || null} />
@@ -1395,14 +1401,14 @@ function PredictionCenter({
                     <select
                       value={slot.selectedTeam}
                       onChange={(event) =>
-                        setQuarterFinalSelections((current) => ({
+                        setProgressionSelections((current) => ({
                           ...current,
                           [slot.matchNo]: event.target.value,
                         }))
                       }
                       disabled={slot.locked || slot.candidates.length === 0}
                       className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-950 outline-none transition focus:border-teal-500 focus:ring-4 focus:ring-teal-500/10 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-500"
-                      aria-label={`Select country reaching the quarter-final from match ${slot.matchNo}`}
+                      aria-label={`Select country reaching the ${reachedStage.destinationLabel} from match ${slot.matchNo}`}
                     >
                       {slot.candidates.length === 0 ? <option value="">No teams available</option> : null}
                       {slot.candidates.map((team) => (
@@ -1432,28 +1438,28 @@ function PredictionCenter({
                     <div>
                       <p className="text-xs font-semibold uppercase text-slate-500">Estimated final ranking</p>
                       <h3 className="mt-1 text-base font-semibold text-slate-950 sm:text-lg">
-                        {quarterFinalProjectionLeader
-                          ? `${quarterFinalProjectionLeader.name} projects ${formatRankEstimate(quarterFinalProjectionLeader.projectedRank)}`
+                        {progressionProjectionLeader
+                          ? `${progressionProjectionLeader.name} projects ${formatRankEstimate(progressionProjectionLeader.projectedRank)}`
                           : "No projection available"}
                       </h3>
                       <p className="mt-1 max-w-2xl text-sm text-slate-500">
-                        Final points are scored against locked results, selected quarter-final teams, and simulated remaining fixtures.
+                        Final points are scored against locked results, the current {reachedStage.destinationLabel.toLowerCase()} path, and simulated remaining fixtures.
                       </p>
                     </div>
                     <div className="grid grid-cols-3 gap-2 text-center text-xs lg:min-w-[300px]">
                       <div className="rounded-lg border border-slate-200 bg-white px-2 py-2">
                         <p className="text-slate-500">Users</p>
-                        <p className="mt-1 font-semibold text-slate-950">{quarterFinalProjection.length}</p>
+                        <p className="mt-1 font-semibold text-slate-950">{progressionProjection.length}</p>
                       </div>
                       <div className="rounded-lg border border-slate-200 bg-white px-2 py-2">
                         <p className="text-slate-500">Valid</p>
                         <p className="mt-1 font-semibold text-slate-950">
-                          {quarterFinalProjection.filter((item) => item.validBracket).length}/{quarterFinalProjection.length}
+                          {progressionProjection.filter((item) => item.validBracket).length}/{progressionProjection.length}
                         </p>
                       </div>
                       <div className="rounded-lg border border-slate-200 bg-white px-2 py-2">
                         <p className="text-slate-500">Leader pts</p>
-                        <p className="mt-1 font-semibold text-slate-950">{compactNumber(quarterFinalProjectionLeader?.projectedScore)}</p>
+                        <p className="mt-1 font-semibold text-slate-950">{compactNumber(progressionProjectionLeader?.projectedScore)}</p>
                       </div>
                     </div>
                   </div>
@@ -1473,7 +1479,7 @@ function PredictionCenter({
                       </tr>
                     </thead>
                     <tbody>
-                      {quarterFinalProjection.map((item, index) => {
+                      {progressionProjection.map((item, index) => {
                         const player = playerByName.get(item.name);
                         const movement = item.currentRank == null ? null : item.currentRank - Math.round(item.projectedRank);
 
