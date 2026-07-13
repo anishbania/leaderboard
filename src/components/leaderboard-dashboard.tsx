@@ -37,6 +37,7 @@ import {
 import type { ComponentType, KeyboardEvent, SVGProps } from "react";
 import type { LeaderboardEntry, LeaderboardPayload, MatchdayData, MatchPrediction } from "@/lib/types";
 import { matchdayData as fallbackMatchdayData } from "@/lib/matchday-data";
+import { calculateFinishPositionShares, trackedFinishPositionCount } from "@/lib/finish-probabilities";
 import { cn, compactNumber, formatCurrency } from "@/lib/utils";
 
 type Props = {
@@ -207,6 +208,35 @@ function formatProbability(value: number | null | undefined) {
     minimumFractionDigits: value > 0 && value < 0.1 ? 1 : 0,
     maximumFractionDigits: 1,
   }).format(value);
+}
+
+function FinishProbabilityTrail({
+  probabilities,
+  className,
+  compact = false,
+}: {
+  probabilities: number[] | null | undefined;
+  className?: string;
+  compact?: boolean;
+}) {
+  const labels = ["2nd", "3rd", "4th", "5th"];
+
+  return (
+    <div
+      className={cn(
+        "flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px] font-medium text-slate-400",
+        compact && "mt-0.5 justify-end gap-x-1.5 text-[9px]",
+        className,
+      )}
+      aria-label="Probability of finishing second through fifth"
+    >
+      {labels.map((label, index) => (
+        <span key={label} className="whitespace-nowrap">
+          {label} <span className="text-slate-500">{formatProbability(probabilities?.[index + 1])}</span>
+        </span>
+      ))}
+    </div>
+  );
 }
 
 function formatRankEstimate(value: number | null | undefined) {
@@ -665,7 +695,7 @@ function buildBracketOutlook(leaderboard: LeaderboardEntry[], matchdayData: Matc
           name,
           currentRank: entry?.rank ?? null,
           currentScore: entry?.score ?? 0,
-          winCount: 0,
+          finishCounts: Array<number>(trackedFinishPositionCount).fill(0),
           scoreTotal: 0,
           bestScore: 0,
           champion: predictedWinner(predictionIndex.get(name)?.get(104)) ?? "No winner",
@@ -741,18 +771,21 @@ function buildBracketOutlook(leaderboard: LeaderboardEntry[], matchdayData: Matc
       }
     }
 
-    const topScore = Math.max(...scores.values());
-    const winners = Array.from(scores, ([name, score]) => ({ name, score })).filter((item) => item.score === topScore);
-    for (const winner of winners) {
-      const result = resultByName.get(winner.name);
-      if (result) result.winCount += 1 / winners.length;
+    const finishShares = calculateFinishPositionShares(scores);
+    for (const [name, shares] of finishShares) {
+      const result = resultByName.get(name);
+      if (!result) continue;
+      shares.forEach((share, positionIndex) => {
+        result.finishCounts[positionIndex] += share;
+      });
     }
   }
 
   const standings = Array.from(resultByName.values())
     .map((item) => ({
       ...item,
-      winChance: item.winCount / bracketSimulationCount,
+      finishChances: item.finishCounts.map((count) => count / bracketSimulationCount),
+      winChance: item.finishCounts[0] / bracketSimulationCount,
       averageScore: item.scoreTotal / bracketSimulationCount,
       validBracket: item.issues.length === 0,
     }))
@@ -1807,13 +1840,13 @@ function PlayerCard({
   entry,
   rankMeta,
   selected,
-  winningProbability,
+  finishProbabilities,
   onClick,
 }: {
   entry: LeaderboardEntry;
   rankMeta?: RankMeta;
   selected: boolean;
-  winningProbability: number | null;
+  finishProbabilities: number[] | null;
   onClick: () => void;
 }) {
   function handleKeyDown(event: KeyboardEvent<HTMLElement>) {
@@ -1864,9 +1897,10 @@ function PlayerCard({
         </div>
         <div>
           <p className="text-xs text-slate-500">Win chance</p>
-          <p className="font-semibold text-slate-950">{formatProbability(winningProbability)}</p>
+          <p className="font-semibold text-slate-950">{formatProbability(finishProbabilities?.[0])}</p>
         </div>
       </div>
+      <FinishProbabilityTrail probabilities={finishProbabilities} className="mt-3 border-t border-slate-200/70 pt-2" />
     </motion.article>
   );
 }
@@ -1940,8 +1974,8 @@ export function LeaderboardDashboard({ initialData }: Props) {
     () => buildBracketOutlook(initialData.leaderboard, currentMatchdayData),
     [currentMatchdayData, initialData.leaderboard],
   );
-  const winningProbabilityByName = useMemo(
-    () => new Map(bracketOutlook.standings.map((entry) => [entry.name, entry.winChance])),
+  const finishProbabilitiesByName = useMemo(
+    () => new Map(bracketOutlook.standings.map((entry) => [entry.name, entry.finishChances])),
     [bracketOutlook],
   );
   const rankMetaByParticipant = useMemo(() => buildRankMeta(initialData.leaderboard), [initialData.leaderboard]);
@@ -2211,7 +2245,10 @@ export function LeaderboardDashboard({ initialData }: Props) {
                         <th className="w-[72px] px-2 py-3 text-right font-semibold">Score</th>
                         <th className="w-[18%] px-2 py-3 font-semibold">Score pace</th>
                         <th className="w-[120px] px-2 py-3 text-right font-semibold">Prize</th>
-                        <th className="w-[126px] px-2 py-3 text-right font-semibold">Winning probability</th>
+                        <th className="w-[190px] px-2 py-3 text-right font-semibold">
+                          Winning probability
+                          <span className="block text-[9px] font-medium normal-case tracking-normal text-slate-400">1st–5th finish</span>
+                        </th>
                         <th className="w-[150px] py-3 pl-2 pr-4 font-semibold">Winner</th>
                       </tr>
                     </thead>
@@ -2254,8 +2291,11 @@ export function LeaderboardDashboard({ initialData }: Props) {
                               </div>
                             </td>
                             <td className="px-2 py-3 text-right font-semibold">{formatCurrency(entry.prize)}</td>
-                            <td className="px-2 py-3 text-right font-semibold text-teal-700">
-                              {formatProbability(winningProbabilityByName.get(entry.name))}
+                            <td className="px-2 py-3 text-right">
+                              <p className="font-semibold text-teal-700">
+                                {formatProbability(finishProbabilitiesByName.get(entry.name)?.[0])}
+                              </p>
+                              <FinishProbabilityTrail probabilities={finishProbabilitiesByName.get(entry.name)} compact />
                             </td>
                             <td className="py-3 pl-2 pr-4"><TeamPill team={entry.selectedWinner} active={teamFilter === entry.selectedWinner} onClick={() => setTeamFilter(entry.selectedWinner)} /></td>
                           </motion.tr>
@@ -2273,7 +2313,7 @@ export function LeaderboardDashboard({ initialData }: Props) {
                       entry={entry}
                       rankMeta={rankMetaByParticipant.get(entry.participantId)}
                       selected={selectedId === entry.participantId}
-                      winningProbability={winningProbabilityByName.get(entry.name) ?? null}
+                      finishProbabilities={finishProbabilitiesByName.get(entry.name) ?? null}
                       onClick={() => setSelectedId(entry.participantId)}
                     />
                   ))}
@@ -2289,7 +2329,7 @@ export function LeaderboardDashboard({ initialData }: Props) {
                       entry={entry}
                       rankMeta={rankMetaByParticipant.get(entry.participantId)}
                       selected={selectedId === entry.participantId}
-                      winningProbability={winningProbabilityByName.get(entry.name) ?? null}
+                      finishProbabilities={finishProbabilitiesByName.get(entry.name) ?? null}
                       onClick={() => setSelectedId(entry.participantId)}
                     />
                   ))}
