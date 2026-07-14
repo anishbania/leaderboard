@@ -38,7 +38,15 @@ import type { ComponentType, KeyboardEvent, SVGProps } from "react";
 import type { LeaderboardEntry, LeaderboardPayload, MatchdayData, MatchPrediction } from "@/lib/types";
 import { matchdayData as fallbackMatchdayData } from "@/lib/matchday-data";
 import { calculateFinishPositionShares, trackedFinishPositionCount } from "@/lib/finish-probabilities";
-import { getCurrentReachedBracketStage, type ReachedBracketStage } from "@/lib/bracket-stage";
+import {
+  formatStageAsOfLabel,
+  getCurrentReachedBracketStage,
+  getProjectableStages,
+  getReachedBracketStageByKey,
+  resolveDashboardAsOfDate,
+  type ReachedBracketStage,
+  type ReachedBracketStageKey,
+} from "@/lib/bracket-stage";
 import { cn, compactNumber, formatCurrency } from "@/lib/utils";
 
 type Props = {
@@ -208,31 +216,78 @@ function formatProbability(value: number | null | undefined) {
   }).format(value);
 }
 
-function FinishProbabilityTrail({
+const finishPositionMeta = [
+  { label: "1st", short: "1", barClass: "bg-teal-600" },
+  { label: "2nd", short: "2", barClass: "bg-teal-400" },
+  { label: "3rd", short: "3", barClass: "bg-amber-400" },
+  { label: "4th", short: "4", barClass: "bg-slate-400" },
+  { label: "5th", short: "5", barClass: "bg-slate-300" },
+] as const;
+
+function FinishProbabilityCell({
   probabilities,
   className,
-  compact = false,
+  align = "end",
 }: {
   probabilities: number[] | null | undefined;
   className?: string;
-  compact?: boolean;
+  align?: "start" | "end";
 }) {
-  const labels = ["2nd", "3rd", "4th", "5th"];
+  const winChance = probabilities?.[0] ?? null;
+  const secondary = finishPositionMeta.slice(1);
+  const stackedTotal = (probabilities ?? []).slice(0, 5).reduce((sum, value) => sum + (value ?? 0), 0);
 
   return (
     <div
       className={cn(
-        "flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px] font-medium text-slate-400",
-        compact && "mt-0.5 justify-end gap-x-1.5 text-[9px]",
+        "flex min-w-0 flex-col gap-1.5",
+        align === "end" ? "items-end text-right" : "items-start text-left",
         className,
       )}
-      aria-label="Probability of finishing second through fifth"
+      aria-label={`Title chance ${formatProbability(winChance)}; finish positions 1st through 5th`}
     >
-      {labels.map((label, index) => (
-        <span key={label} className="whitespace-nowrap">
-          {label} <span className="text-slate-500">{formatProbability(probabilities?.[index + 1])}</span>
+      <div className={cn("flex items-baseline gap-1.5", align === "end" && "flex-row-reverse")}>
+        <span className="text-sm font-bold tabular-nums tracking-tight text-teal-700 sm:text-[15px]">
+          {formatProbability(winChance)}
         </span>
-      ))}
+        <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">title</span>
+      </div>
+
+      <div
+        className={cn(
+          "flex h-1.5 w-full max-w-[148px] overflow-hidden rounded-full bg-slate-100 ring-1 ring-slate-200/80",
+          align === "end" && "ml-auto",
+        )}
+        title="Share of simulated finishes in top 5"
+      >
+        {finishPositionMeta.map((meta, index) => {
+          const value = probabilities?.[index] ?? 0;
+          if (value <= 0) return null;
+          const width = stackedTotal > 0 ? (value / Math.max(stackedTotal, 0.0001)) * 100 : 0;
+          return (
+            <div
+              key={meta.label}
+              className={cn("h-full min-w-[2px]", meta.barClass)}
+              style={{ width: `${Math.max(2, width)}%` }}
+              title={`${meta.label}: ${formatProbability(value)}`}
+            />
+          );
+        })}
+      </div>
+
+      <div
+        className={cn(
+          "grid w-full max-w-[148px] grid-cols-4 gap-x-1 gap-y-0.5 text-[10px] leading-tight text-slate-500",
+          align === "end" && "ml-auto",
+        )}
+      >
+        {secondary.map((meta, index) => (
+          <div key={meta.label} className="min-w-0 tabular-nums">
+            <span className="font-medium text-slate-400">{meta.short}</span>{" "}
+            <span className="font-semibold text-slate-600">{formatProbability(probabilities?.[index + 1])}</span>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
@@ -497,7 +552,53 @@ function buildProgressionOptions(matchdayData: MatchdayData, stage: ReachedBrack
   });
 }
 
-type ProgressionScenario = ReturnType<typeof buildProgressionOptions>;
+type ProgressionSlot = ReturnType<typeof buildProgressionOptions>[number];
+type ProgressionScenario = ProgressionSlot[];
+
+function parentBracketMatch(matchNo: number) {
+  for (const [parentText, children] of Object.entries(bracketChildren)) {
+    if (children.includes(matchNo)) return Number(parentText);
+  }
+  return null;
+}
+
+function buildAdvancementOptions(
+  matchdayData: MatchdayData,
+  stage: ReachedBracketStage,
+  reachedScenario: ProgressionScenario,
+) {
+  if (stage.targetMatchNos.length === 0) return [] as ProgressionSlot[];
+
+  const winnerByFeeder = new Map(
+    reachedScenario
+      .filter((slot) => slot.selectedTeam)
+      .map((slot) => [slot.matchNo, slot.selectedTeam] as const),
+  );
+
+  return stage.targetMatchNos.map((matchNo) => {
+    const lockedResult = matchdayData.actualResults?.[String(matchNo)];
+    const children = bracketChildren[matchNo] ?? [];
+    const derivedTeams = children
+      .map((childMatchNo) => winnerByFeeder.get(childMatchNo) ?? "")
+      .filter(Boolean);
+    const counts = predictionWinnerCounts(matchdayData, matchNo);
+    const candidates = sortTeamsByConsensus(
+      lockedResult ? [lockedResult.winner] : derivedTeams,
+      counts,
+    );
+    const defaultTeam = lockedResult?.winner ?? candidates[0] ?? "";
+
+    return {
+      matchNo,
+      destinationMatchNo: parentBracketMatch(matchNo),
+      locked: Boolean(lockedResult),
+      selectedTeam: defaultTeam,
+      candidates,
+      topCount: counts.get(defaultTeam) ?? 0,
+      pickCount: (matchdayData.predictionsByMatch[String(matchNo)] ?? []).length,
+    } satisfies ProgressionSlot;
+  });
+}
 
 function scoreScenarioBracket(
   name: string,
@@ -1071,39 +1172,103 @@ function PredictionCenter({
   const playerByName = useMemo(() => new Map(leaderboard.map((entry) => [entry.name, entry])), [leaderboard]);
   const topOutlook = bracketOutlook.standings[0];
   const shownOutlook = useMemo(() => bracketOutlook.standings.slice(0, 8), [bracketOutlook]);
-  const reachedStage = useMemo(() => getCurrentReachedBracketStage(matchdayData.actualResults), [matchdayData.actualResults]);
+  const liveReachedStage = useMemo(
+    () => getCurrentReachedBracketStage(matchdayData.actualResults, asOfDate),
+    [asOfDate, matchdayData.actualResults],
+  );
+  const projectableStages = useMemo(() => getProjectableStages(liveReachedStage), [liveReachedStage]);
+  const [stageOverride, setStageOverride] = useState<ReachedBracketStageKey | null>(null);
+  const reachedStage = useMemo(
+    () => (stageOverride ? getReachedBracketStageByKey(stageOverride) : liveReachedStage),
+    [liveReachedStage, stageOverride],
+  );
   const progressionOptions = useMemo(() => buildProgressionOptions(matchdayData, reachedStage), [matchdayData, reachedStage]);
   const [progressionSelections, setProgressionSelections] = useState<Record<number, string>>({});
+  const [advancementSelections, setAdvancementSelections] = useState<Record<number, string>>({});
   const progressionScenario = useMemo(
     () =>
-      progressionOptions.map((slot) => ({
-        ...slot,
-        selectedTeam: progressionSelections[slot.matchNo] ?? slot.selectedTeam,
-      })),
+      progressionOptions.map((slot) => {
+        const selectedTeam = progressionSelections[slot.matchNo] ?? slot.selectedTeam;
+        return {
+          ...slot,
+          selectedTeam: slot.candidates.includes(selectedTeam) ? selectedTeam : slot.selectedTeam,
+        };
+      }),
     [progressionOptions, progressionSelections],
   );
+  const advancementDefaults = useMemo(
+    () => buildAdvancementOptions(matchdayData, reachedStage, progressionScenario),
+    [matchdayData, progressionScenario, reachedStage],
+  );
+  const advancementScenario = useMemo(
+    () =>
+      advancementDefaults.map((slot) => {
+        const selectedTeam = advancementSelections[slot.matchNo] ?? slot.selectedTeam;
+        return {
+          ...slot,
+          selectedTeam: slot.candidates.includes(selectedTeam) ? selectedTeam : slot.selectedTeam,
+        };
+      }),
+    [advancementDefaults, advancementSelections],
+  );
+  const combinedProgressionScenario = useMemo(
+    () => [...progressionScenario, ...advancementScenario.filter((slot) => slot.selectedTeam)],
+    [advancementScenario, progressionScenario],
+  );
   const progressionProjection = useMemo(
-    () => buildProgressionProjection(leaderboard, matchdayData, progressionScenario),
-    [leaderboard, matchdayData, progressionScenario],
+    () => buildProgressionProjection(leaderboard, matchdayData, combinedProgressionScenario),
+    [combinedProgressionScenario, leaderboard, matchdayData],
   );
   const progressionProjectionLeader = progressionProjection[0];
   const selectedProgressionTeams = useMemo(
     () => progressionScenario.map((slot) => slot.selectedTeam).filter(Boolean),
     [progressionScenario],
   );
+  const selectedAdvancementTeams = useMemo(
+    () => advancementScenario.map((slot) => slot.selectedTeam).filter(Boolean),
+    [advancementScenario],
+  );
   const progressionPairs = useMemo(
     () => {
       if (reachedStage.targetMatchNos.length === 0) {
-        return [{ matchNo: null, feeders: progressionScenario }];
+        return [{ matchNo: null as number | null, feeders: progressionScenario, kind: "reached" as const }];
       }
 
       return reachedStage.targetMatchNos.map((matchNo) => ({
         matchNo,
         feeders: bracketChildren[matchNo]?.map((feederNo) => progressionScenario.find((slot) => slot.matchNo === feederNo)) ?? [],
+        kind: "reached" as const,
       }));
     },
     [progressionScenario, reachedStage],
   );
+  const advancementPairs = useMemo(() => {
+    if (advancementScenario.length === 0) return [] as Array<{ matchNo: number | null; feeders: Array<ProgressionSlot | undefined>; kind: "advance" }>;
+
+    if (reachedStage.key === "semi-finals") {
+      return [{
+        matchNo: 104,
+        feeders: [101, 102].map((matchNo) => advancementScenario.find((slot) => slot.matchNo === matchNo)),
+        kind: "advance" as const,
+      }];
+    }
+
+    if (reachedStage.key === "final") {
+      return [{
+        matchNo: null as number | null,
+        feeders: advancementScenario,
+        kind: "advance" as const,
+      }];
+    }
+
+    return reachedStage.targetMatchNos.length
+      ? [{
+          matchNo: null as number | null,
+          feeders: advancementScenario,
+          kind: "advance" as const,
+        }]
+      : [];
+  }, [advancementScenario, reachedStage]);
 
   const predictions = useMemo(() => {
     if (!selectedMatch) return [];
@@ -1181,6 +1346,28 @@ function PredictionCenter({
 
   function resetProgressionScenario() {
     setProgressionSelections({});
+    setAdvancementSelections({});
+    setStageOverride(null);
+  }
+
+  function selectReachedTeam(matchNo: number, team: string) {
+    setProgressionSelections((current) => ({ ...current, [matchNo]: team }));
+    // Drop next-round picks that no longer appear in the rebuilt matchups.
+    setAdvancementSelections((current) => {
+      const next = { ...current };
+      for (const [advanceMatchNo, advanceTeam] of Object.entries(next)) {
+        const children = bracketChildren[Number(advanceMatchNo)];
+        if (!children) continue;
+        const related = children.includes(matchNo);
+        if (related && advanceTeam === team) continue;
+        if (related) delete next[Number(advanceMatchNo)];
+      }
+      return next;
+    });
+  }
+
+  function selectAdvancementTeam(matchNo: number, team: string) {
+    setAdvancementSelections((current) => ({ ...current, [matchNo]: team }));
   }
 
   return (
@@ -1301,17 +1488,25 @@ function PredictionCenter({
       </div>
 
       <div className="overflow-hidden rounded-2xl border border-slate-800 bg-slate-950 shadow-[0_18px_50px_rgba(15,23,42,0.18)]">
-        <div className="grid gap-px bg-slate-800 xl:grid-cols-[430px_minmax(0,1fr)]">
+        <div className="grid gap-px bg-slate-800 xl:grid-cols-[minmax(320px,420px)_minmax(0,1fr)]">
           <div className="bg-[linear-gradient(135deg,#0f172a_0%,#134e4a_58%,#1e293b_100%)] p-4 text-white sm:p-5">
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
-                <p className="inline-flex items-center gap-1.5 rounded-md border border-white/15 bg-white/10 px-2 py-1 text-[11px] font-semibold uppercase text-teal-100">
-                  <ShieldCheck className="h-3.5 w-3.5" />
-                  {reachedStage.badgeLabel}
-                </p>
-                <h3 className="mt-3 text-xl font-semibold tracking-tight sm:text-2xl">Countries reached as of today</h3>
+                <div className="flex flex-wrap items-center gap-2">
+                  <p className="inline-flex items-center gap-1.5 rounded-md border border-white/15 bg-white/10 px-2 py-1 text-[11px] font-semibold uppercase text-teal-100">
+                    <ShieldCheck className="h-3.5 w-3.5" />
+                    {reachedStage.badgeLabel}
+                  </p>
+                  <p className="rounded-md border border-white/10 bg-white/5 px-2 py-1 text-[11px] font-medium text-slate-300">
+                    As of {formatStageAsOfLabel(asOfDate)}
+                  </p>
+                </div>
+                <h3 className="mt-3 text-xl font-semibold tracking-tight sm:text-2xl">
+                  Countries reached · {reachedStage.destinationLabel}
+                </h3>
                 <p className="mt-2 max-w-xl text-sm text-slate-300">
-                  The live result path determines the current stage automatically. Official teams are locked, while unfinished feeder matches retain a bracket-based estimate.
+                  Stage updates from live results and the tournament calendar. Pick who has reached the {reachedStage.destinationLabel.toLowerCase()}
+                  {reachedStage.nextDestinationLabel ? `, then project the ${reachedStage.nextDestinationLabel.toLowerCase()} path` : ""}.
                 </p>
               </div>
               <button
@@ -1324,9 +1519,36 @@ function PredictionCenter({
               </button>
             </div>
 
+            {projectableStages.length > 1 ? (
+              <div className="mt-4 flex flex-wrap gap-1.5" role="tablist" aria-label="Projection stage">
+                {projectableStages.map((stage) => {
+                  const active = stage.key === reachedStage.key;
+                  const isLive = stage.key === liveReachedStage.key;
+                  return (
+                    <button
+                      key={stage.key}
+                      type="button"
+                      role="tab"
+                      aria-selected={active}
+                      onClick={() => setStageOverride(stage.key === liveReachedStage.key ? null : stage.key)}
+                      className={cn(
+                        "inline-flex h-8 items-center gap-1.5 rounded-md border px-2.5 text-xs font-semibold transition",
+                        active
+                          ? "border-teal-300/40 bg-teal-400/20 text-white"
+                          : "border-white/10 bg-white/5 text-slate-300 hover:bg-white/10",
+                      )}
+                    >
+                      {stage.destinationLabel}
+                      {isLive ? <span className="rounded bg-white/15 px-1.5 py-0.5 text-[10px] uppercase">Live</span> : null}
+                    </button>
+                  );
+                })}
+              </div>
+            ) : null}
+
             <div className="mt-4 grid grid-cols-2 gap-2 text-xs min-[420px]:grid-cols-4">
               <div className="rounded-lg border border-white/10 bg-white/10 p-2">
-                <p className="text-slate-300">Selected</p>
+                <p className="text-slate-300">Field size</p>
                 <p className="mt-1 text-lg font-semibold">{selectedProgressionTeams.length}/{reachedStage.expectedCountryCount}</p>
               </div>
               <div className="rounded-lg border border-white/10 bg-white/10 p-2">
@@ -1334,8 +1556,14 @@ function PredictionCenter({
                 <p className="mt-1 text-lg font-semibold">{progressionScenario.filter((slot) => slot.locked).length}</p>
               </div>
               <div className="rounded-lg border border-white/10 bg-white/10 p-2">
-                <p className="text-slate-300">Projected #1</p>
-                <p className="mt-1 truncate text-lg font-semibold">{progressionProjectionLeader?.name ?? "-"}</p>
+                <p className="text-slate-300">
+                  {reachedStage.nextDestinationLabel ? `${reachedStage.nextDestinationLabel} picks` : "Projected #1"}
+                </p>
+                <p className="mt-1 truncate text-lg font-semibold">
+                  {reachedStage.nextDestinationLabel
+                    ? `${selectedAdvancementTeams.length}/${Math.max(advancementScenario.length, 1)}`
+                    : (progressionProjectionLeader?.name ?? "-")}
+                </p>
               </div>
               <div className="rounded-lg border border-white/10 bg-white/10 p-2">
                 <p className="text-slate-300">Runs</p>
@@ -1343,94 +1571,263 @@ function PredictionCenter({
               </div>
             </div>
 
-            <div className="mt-4 grid gap-2">
-              {progressionPairs.map((pair) => (
-                <div key={pair.matchNo ?? reachedStage.key} className="rounded-xl border border-white/10 bg-white/[0.06] p-3">
-                  <div className="mb-2 flex items-center justify-between gap-2 text-xs">
-                    <span className="font-semibold uppercase text-teal-100">
-                      {pair.matchNo ? `${reachedStage.destinationLabel} ${pair.matchNo}` : reachedStage.destinationLabel}
-                    </span>
-                    <span className="text-slate-400">Official bracket path</span>
-                  </div>
-                  <div className={cn("grid min-w-0 items-center gap-2", pair.feeders.length > 1 && "grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)]")}>
-                    {pair.feeders.map((slot, feederIndex) => (
-                      <div key={slot?.matchNo ?? feederIndex} className="min-w-0">
-                        <p className="truncate text-[11px] text-slate-400">{reachedStage.feederLabel} {slot?.matchNo ?? "-"}</p>
-                        <p className="truncate text-sm font-semibold text-white">{slot?.selectedTeam || "Pending"}</p>
+            <div className="mt-4 space-y-3">
+              <div>
+                <p className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-teal-100">
+                  Step 1 · {reachedStage.destinationLabel} field
+                </p>
+                <div className="grid gap-2">
+                  {progressionPairs.map((pair) => (
+                    <div key={`reached-${pair.matchNo ?? reachedStage.key}`} className="rounded-xl border border-white/10 bg-white/[0.06] p-3">
+                      <div className="mb-2 flex items-center justify-between gap-2 text-xs">
+                        <span className="font-semibold uppercase text-teal-100">
+                          {pair.matchNo ? `${reachedStage.destinationLabel} ${pair.matchNo}` : reachedStage.destinationLabel}
+                        </span>
+                        <span className="text-slate-400">From {reachedStage.feederLabel}</span>
+                      </div>
+                      <div className="flex min-w-0 flex-wrap items-center gap-2">
+                        {pair.feeders.map((slot, feederIndex) => (
+                          <div key={slot?.matchNo ?? feederIndex} className="flex min-w-0 flex-1 items-center gap-2">
+                            {feederIndex > 0 ? (
+                              <span className="shrink-0 rounded bg-white/10 px-2 py-1 text-[11px] font-semibold text-slate-300">vs</span>
+                            ) : null}
+                            <div className="min-w-0 flex-1">
+                              <p className="truncate text-[11px] text-slate-400">{reachedStage.feederLabel} {slot?.matchNo ?? "-"}</p>
+                              <p className="truncate text-sm font-semibold text-white">{slot?.selectedTeam || "Pending"}</p>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {reachedStage.nextDestinationLabel && advancementPairs.length > 0 ? (
+                <div>
+                  <p className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-amber-100">
+                    Step 2 · {reachedStage.nextDestinationLabel} path
+                  </p>
+                  <div className="grid gap-2">
+                    {advancementPairs.map((pair) => (
+                      <div key={`advance-${pair.matchNo ?? "next"}`} className="rounded-xl border border-amber-300/20 bg-amber-400/10 p-3">
+                        <div className="mb-2 flex items-center justify-between gap-2 text-xs">
+                          <span className="font-semibold uppercase text-amber-100">
+                            {pair.matchNo ? `${reachedStage.nextDestinationLabel} ${pair.matchNo}` : reachedStage.nextDestinationLabel}
+                          </span>
+                          <span className="text-amber-100/70">From {reachedStage.destinationLabel}</span>
+                        </div>
+                        <div className="flex min-w-0 flex-wrap items-center gap-2">
+                          {pair.feeders.map((slot, feederIndex) => (
+                            <div key={slot?.matchNo ?? feederIndex} className="flex min-w-0 flex-1 items-center gap-2">
+                              {feederIndex > 0 ? (
+                                <span className="shrink-0 rounded bg-white/10 px-2 py-1 text-[11px] font-semibold text-slate-300">vs</span>
+                              ) : null}
+                              <div className="min-w-0 flex-1">
+                                <p className="truncate text-[11px] text-slate-400">{reachedStage.destinationLabel} {slot?.matchNo ?? "-"}</p>
+                                <p className="truncate text-sm font-semibold text-white">{slot?.selectedTeam || "Pick winner"}</p>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
                       </div>
                     ))}
-                    {pair.feeders.length > 1 ? (
-                      <span className="row-start-1 col-start-2 rounded bg-white/10 px-2 py-1 text-[11px] font-semibold text-slate-300">vs</span>
-                    ) : null}
                   </div>
                 </div>
-              ))}
+              ) : null}
             </div>
           </div>
 
           <div className="bg-white p-3 sm:p-4">
-            <div className="grid gap-3 2xl:grid-cols-[360px_minmax(0,1fr)]">
-              <div className="grid gap-2 sm:grid-cols-2 2xl:grid-cols-1">
-                {progressionScenario.map((slot) => (
-                  <div
-                    key={slot.matchNo}
-                    className={cn(
-                      "rounded-xl border p-3 shadow-sm transition",
-                      slot.locked ? "border-emerald-200 bg-emerald-50/70" : "border-slate-200 bg-slate-50",
-                    )}
-                  >
-                    <div className="mb-2 flex items-center justify-between gap-2">
-                      <div className="min-w-0">
-                        <p className="truncate text-[11px] font-semibold uppercase text-slate-500">
-                          {reachedStage.feederLabel} match {slot.matchNo} to {reachedStage.destinationLabel} {slot.destinationMatchNo ?? ""}
-                        </p>
-                        <div className="mt-1">
-                          <TeamPill team={slot.selectedTeam || null} />
-                        </div>
-                      </div>
-                      <span
-                        className={cn(
-                          "inline-flex h-7 shrink-0 items-center gap-1 rounded-md px-2 text-[11px] font-semibold",
-                          slot.locked ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-700",
-                        )}
-                      >
-                        {slot.locked ? <Lock className="h-3 w-3" /> : <TrendingUp className="h-3 w-3" />}
-                        {slot.locked ? "Official" : "Estimate"}
-                      </span>
-                    </div>
-                    <select
-                      value={slot.selectedTeam}
-                      onChange={(event) =>
-                        setProgressionSelections((current) => ({
-                          ...current,
-                          [slot.matchNo]: event.target.value,
-                        }))
-                      }
-                      disabled={slot.locked || slot.candidates.length === 0}
-                      className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-950 outline-none transition focus:border-teal-500 focus:ring-4 focus:ring-teal-500/10 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-500"
-                      aria-label={`Select country reaching the ${reachedStage.destinationLabel} from match ${slot.matchNo}`}
+            <div className="space-y-4">
+              <div>
+                <div className="mb-2 flex items-center justify-between gap-2">
+                  <div>
+                    <p className="text-xs font-semibold uppercase text-slate-500">Step 1</p>
+                    <h4 className="text-sm font-semibold text-slate-950">
+                      Select {reachedStage.destinationLabel.toLowerCase()} countries
+                    </h4>
+                  </div>
+                  <p className="text-xs text-slate-500">
+                    {selectedProgressionTeams.length}/{reachedStage.expectedCountryCount} set
+                  </p>
+                </div>
+                <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-2 2xl:grid-cols-4">
+                  {progressionScenario.map((slot) => (
+                    <div
+                      key={slot.matchNo}
+                      className={cn(
+                        "rounded-xl border p-3 shadow-sm transition",
+                        slot.locked ? "border-emerald-200 bg-emerald-50/70" : "border-slate-200 bg-slate-50",
+                      )}
                     >
-                      {slot.candidates.length === 0 ? <option value="">No teams available</option> : null}
-                      {slot.candidates.map((team) => (
-                        <option key={team} value={team}>
-                          {team}
-                        </option>
-                      ))}
-                    </select>
-                    <div className="mt-2 h-1.5 rounded-full bg-white">
-                      <div
-                        className={cn("h-1.5 rounded-full", slot.locked ? "bg-emerald-500" : "bg-amber-500")}
-                        style={{
-                          width: `${slot.locked ? 100 : Math.max(8, (slot.topCount / Math.max(slot.pickCount, 1)) * 100)}%`,
-                        }}
-                      />
+                      <div className="mb-2 flex items-center justify-between gap-2">
+                        <div className="min-w-0">
+                          <p className="truncate text-[11px] font-semibold uppercase text-slate-500">
+                            {reachedStage.feederLabel} {slot.matchNo}
+                            {slot.destinationMatchNo ? ` → ${reachedStage.destinationLabel} ${slot.destinationMatchNo}` : ""}
+                          </p>
+                          <div className="mt-1">
+                            <TeamPill team={slot.selectedTeam || null} />
+                          </div>
+                        </div>
+                        <span
+                          className={cn(
+                            "inline-flex h-7 shrink-0 items-center gap-1 rounded-md px-2 text-[11px] font-semibold",
+                            slot.locked ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-700",
+                          )}
+                        >
+                          {slot.locked ? <Lock className="h-3 w-3" /> : <TrendingUp className="h-3 w-3" />}
+                          {slot.locked ? "Official" : "Pick"}
+                        </span>
+                      </div>
+
+                      <div className="flex flex-wrap gap-1.5">
+                        {slot.candidates.map((team) => {
+                          const active = slot.selectedTeam === team;
+                          return (
+                            <button
+                              key={team}
+                              type="button"
+                              disabled={slot.locked}
+                              onClick={() => selectReachedTeam(slot.matchNo, team)}
+                              className={cn(
+                                "inline-flex max-w-full items-center gap-1.5 rounded-md border px-2 py-1.5 text-xs font-semibold transition",
+                                active
+                                  ? "border-slate-900 bg-slate-900 text-white"
+                                  : "border-slate-200 bg-white text-slate-700 hover:border-slate-300",
+                                slot.locked && "cursor-not-allowed opacity-80",
+                              )}
+                              aria-pressed={active}
+                              aria-label={`Select ${team} for ${reachedStage.destinationLabel} from match ${slot.matchNo}`}
+                            >
+                              <span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: teamColor(team) }} />
+                              <span className="truncate">{team}</span>
+                            </button>
+                          );
+                        })}
+                        {slot.candidates.length === 0 ? (
+                          <p className="text-xs text-slate-500">No teams available yet</p>
+                        ) : null}
+                      </div>
+
+                      <div className="mt-2 h-1.5 rounded-full bg-white">
+                        <div
+                          className={cn("h-1.5 rounded-full", slot.locked ? "bg-emerald-500" : "bg-amber-500")}
+                          style={{
+                            width: `${slot.locked ? 100 : Math.max(8, (slot.topCount / Math.max(slot.pickCount, 1)) * 100)}%`,
+                          }}
+                        />
+                      </div>
+                      <p className="mt-2 text-xs text-slate-500">
+                        {slot.locked
+                          ? "Locked by official result"
+                          : slot.pickCount > 0
+                            ? `${slot.topCount}/${slot.pickCount} brackets favor this default`
+                            : "Bracket path estimate"}
+                      </p>
                     </div>
-                    <p className="mt-2 text-xs text-slate-500">
-                      {slot.locked ? "Authenticated by actual result" : `${slot.topCount}/${slot.pickCount} brackets backed this default`}
+                  ))}
+                </div>
+              </div>
+
+              {reachedStage.nextDestinationLabel && advancementScenario.length > 0 ? (
+                <div>
+                  <div className="mb-2 flex items-center justify-between gap-2">
+                    <div>
+                      <p className="text-xs font-semibold uppercase text-slate-500">Step 2</p>
+                      <h4 className="text-sm font-semibold text-slate-950">
+                        Select {reachedStage.nextDestinationLabel.toLowerCase()} countries
+                      </h4>
+                    </div>
+                    <p className="text-xs text-slate-500">
+                      {selectedAdvancementTeams.length}/{advancementScenario.length} set
                     </p>
                   </div>
-                ))}
-              </div>
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    {advancementScenario.map((slot) => {
+                      const ready = slot.candidates.length >= 2 || slot.locked;
+                      return (
+                        <div
+                          key={slot.matchNo}
+                          className={cn(
+                            "rounded-xl border p-3 shadow-sm transition",
+                            slot.locked
+                              ? "border-emerald-200 bg-emerald-50/70"
+                              : ready
+                                ? "border-amber-200 bg-amber-50/50"
+                                : "border-dashed border-slate-200 bg-slate-50/80",
+                          )}
+                        >
+                          <div className="mb-2 flex items-center justify-between gap-2">
+                            <div className="min-w-0">
+                              <p className="truncate text-[11px] font-semibold uppercase text-slate-500">
+                                {reachedStage.destinationLabel} {slot.matchNo}
+                                {slot.destinationMatchNo
+                                  ? ` → ${reachedStage.nextDestinationLabel} ${slot.destinationMatchNo}`
+                                  : ` → ${reachedStage.nextDestinationLabel}`}
+                              </p>
+                              <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                                {slot.candidates.map((team, index) => (
+                                  <span key={team} className="inline-flex items-center gap-1 text-xs text-slate-600">
+                                    {index > 0 ? <span className="text-slate-400">vs</span> : null}
+                                    <TeamPill team={team} />
+                                  </span>
+                                ))}
+                                {slot.candidates.length === 0 ? (
+                                  <span className="text-xs text-slate-500">Complete step 1 matchups first</span>
+                                ) : null}
+                              </div>
+                            </div>
+                            <span
+                              className={cn(
+                                "inline-flex h-7 shrink-0 items-center gap-1 rounded-md px-2 text-[11px] font-semibold",
+                                slot.locked ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-700",
+                              )}
+                            >
+                              {slot.locked ? <Lock className="h-3 w-3" /> : <Trophy className="h-3 w-3" />}
+                              {slot.locked ? "Official" : "Winner"}
+                            </span>
+                          </div>
+
+                          <div className="flex flex-wrap gap-1.5">
+                            {slot.candidates.map((team) => {
+                              const active = slot.selectedTeam === team;
+                              return (
+                                <button
+                                  key={team}
+                                  type="button"
+                                  disabled={slot.locked || slot.candidates.length === 0}
+                                  onClick={() => selectAdvancementTeam(slot.matchNo, team)}
+                                  className={cn(
+                                    "inline-flex max-w-full items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-xs font-semibold transition",
+                                    active
+                                      ? "border-amber-600 bg-amber-600 text-white"
+                                      : "border-slate-200 bg-white text-slate-700 hover:border-amber-300 hover:bg-amber-50",
+                                    slot.locked && "cursor-not-allowed opacity-80",
+                                  )}
+                                  aria-pressed={active}
+                                  aria-label={`Select ${team} to reach the ${reachedStage.nextDestinationLabel}`}
+                                >
+                                  <span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: teamColor(team) }} />
+                                  <span className="truncate">{team}</span>
+                                </button>
+                              );
+                            })}
+                          </div>
+                          <p className="mt-2 text-xs text-slate-500">
+                            {slot.locked
+                              ? "Locked by official result"
+                              : slot.selectedTeam
+                                ? `${slot.selectedTeam} advances to the ${reachedStage.nextDestinationLabel?.toLowerCase()}`
+                                : "Choose a winner for this semi-final path"}
+                          </p>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              ) : null}
 
               <div className="min-w-0 rounded-xl border border-slate-200 bg-white shadow-sm">
                 <div className="border-b border-slate-200 bg-slate-50 p-3 sm:p-4">
@@ -1443,7 +1840,8 @@ function PredictionCenter({
                           : "No projection available"}
                       </h3>
                       <p className="mt-1 max-w-2xl text-sm text-slate-500">
-                        Final points are scored against locked results, the current {reachedStage.destinationLabel.toLowerCase()} path, and simulated remaining fixtures.
+                        Scored from locked results, your {reachedStage.destinationLabel.toLowerCase()} field
+                        {reachedStage.nextDestinationLabel ? ` and ${reachedStage.nextDestinationLabel.toLowerCase()} picks` : ""}, plus simulated remaining fixtures.
                       </p>
                     </div>
                     <div className="grid grid-cols-3 gap-2 text-center text-xs lg:min-w-[300px]">
@@ -1545,7 +1943,7 @@ function PredictionCenter({
       <div className="rounded-xl border border-slate-200/80 bg-white/90 p-3 shadow-[0_8px_30px_rgba(15,23,42,0.05)] backdrop-blur">
         <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
           <div>
-              <p className="text-xs font-semibold uppercase text-slate-500">Knockout calendar</p>
+            <p className="text-xs font-semibold uppercase text-slate-500">Knockout calendar</p>
             <p className="mt-1 text-sm font-semibold text-slate-950">{formatMatchDate(selectedDate)}</p>
           </div>
           <div className="grid gap-2 sm:grid-cols-[1fr_auto_1fr] md:flex md:items-center">
@@ -1901,12 +2299,11 @@ function PlayerCard({
           <p className="text-xs text-slate-500">Prize</p>
           <p className="font-semibold text-slate-950">{formatCurrency(entry.prize)}</p>
         </div>
-        <div>
+        <div className="col-span-2 min-[420px]:col-span-1">
           <p className="text-xs text-slate-500">Win chance</p>
-          <p className="font-semibold text-slate-950">{formatProbability(finishProbabilities?.[0])}</p>
+          <FinishProbabilityCell probabilities={finishProbabilities} align="start" className="mt-1" />
         </div>
       </div>
-      <FinishProbabilityTrail probabilities={finishProbabilities} className="mt-3 border-t border-slate-200/70 pt-2" />
     </motion.article>
   );
 }
@@ -1974,7 +2371,10 @@ export function LeaderboardDashboard({ initialData }: Props) {
   const stats = initialData.stats;
   const maxScore = initialData.leaderboard[0]?.score ?? 1;
   const currentMatchdayData = initialData.matchdayData ?? fallbackMatchdays;
-  const dashboardAsOfDate = (initialData.health.checkedAt || initialData.lastSyncedAt || "2026-07-06T00:00:00.000Z").slice(0, 10);
+  const dashboardAsOfDate = resolveDashboardAsOfDate(
+    currentMatchdayData,
+    initialData.health.checkedAt || initialData.lastSyncedAt,
+  );
   const syncedLabel = formatSyncedAt(initialData.lastSyncedAt);
   const bracketOutlook = useMemo(
     () => buildBracketOutlook(initialData.leaderboard, currentMatchdayData),
@@ -2249,13 +2649,15 @@ export function LeaderboardDashboard({ initialData }: Props) {
                         <th className="w-[25%] px-2 py-3 font-semibold">Player</th>
                         <th className="w-[70px] px-2 py-3 text-right font-semibold">Move</th>
                         <th className="w-[72px] px-2 py-3 text-right font-semibold">Score</th>
-                        <th className="w-[18%] px-2 py-3 font-semibold">Score pace</th>
-                        <th className="w-[120px] px-2 py-3 text-right font-semibold">Prize</th>
-                        <th className="w-[190px] px-2 py-3 text-right font-semibold">
-                          Winning probability
-                          <span className="block text-[9px] font-medium normal-case tracking-normal text-slate-400">1st–5th finish</span>
+                        <th className="w-[14%] px-2 py-3 font-semibold">Score pace</th>
+                        <th className="w-[100px] px-2 py-3 text-right font-semibold">Prize</th>
+                        <th className="w-[176px] px-2 py-3 text-right font-semibold">
+                          Win chance
+                          <span className="block text-[9px] font-medium normal-case tracking-normal text-slate-400">
+                            Title · top 5 split
+                          </span>
                         </th>
-                        <th className="w-[150px] py-3 pl-2 pr-4 font-semibold">Winner</th>
+                        <th className="w-[132px] py-3 pl-2 pr-4 font-semibold">Winner</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -2297,11 +2699,8 @@ export function LeaderboardDashboard({ initialData }: Props) {
                               </div>
                             </td>
                             <td className="px-2 py-3 text-right font-semibold">{formatCurrency(entry.prize)}</td>
-                            <td className="px-2 py-3 text-right">
-                              <p className="font-semibold text-teal-700">
-                                {formatProbability(finishProbabilitiesByName.get(entry.name)?.[0])}
-                              </p>
-                              <FinishProbabilityTrail probabilities={finishProbabilitiesByName.get(entry.name)} compact />
+                            <td className="px-2 py-3 align-middle">
+                              <FinishProbabilityCell probabilities={finishProbabilitiesByName.get(entry.name)} />
                             </td>
                             <td className="py-3 pl-2 pr-4"><TeamPill team={entry.selectedWinner} active={teamFilter === entry.selectedWinner} onClick={() => setTeamFilter(entry.selectedWinner)} /></td>
                           </motion.tr>
